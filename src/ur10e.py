@@ -201,40 +201,6 @@ class UR10e():
     def dynamics(self, q, qdot):
         return q + self.dt * qdot
 
-    def get_joint_trajectory(self, t, npoints):
-        """
-        Provide trajectory to be followed.
-        :param t0: starting time
-        :type t0: float
-        :param npoints: number of trajectory points
-        :type npoints: int
-        :return: trajectory with shape (Nx, npoints)
-        :rtype: np.array
-        """
-
-        # Current saved trajectories are poses
-        if t == 0.0:
-            f_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../trajectories/traj_23.txt") # TODO: CHANGE TRAJECTORY HERE
-            print(f_path)
-            self.pose_trajectory = np.loadtxt(f_path, ndmin=2)[:,1:]
-            print((self.n, int(self.pose_trajectory.shape[0])))
-
-            # Pose to joint trajectory conversion
-            joint_trajectory = []
-            for pose6 in self.pose_trajectory:
-                pose_T = self.workspace_offset @ utils.pose6_to_T(pose6) # TODO: FIX THIS PRE TRASNFORMATION
-                joints = self.IK("elbow_up_2", pose_T)
-                joint_trajectory.append(joints)
-
-            joint_trajectory = np.array(joint_trajectory)
-            self.trajectory = joint_trajectory.T
-
-        id_s = int(round(t / self.dt))
-        id_e = int(round(t / self.dt)) + npoints
-        x_r = self.trajectory[:, id_s:id_e]
-
-        return x_r
-
     def get_initial_pose(self):
         """
         Helper function to get a starting state, depending on the dynamics type.
