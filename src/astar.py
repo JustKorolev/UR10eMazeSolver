@@ -119,6 +119,43 @@ def line_is_free(image, start, end, free_threshold=128):
     return True
 
 
+def inflate_obstacles(image, inflation_radius=1, free_threshold=128):
+    """
+    Expand dark obstacle pixels by inflation_radius pixels.
+
+    Bright pixels are free. Dark pixels are obstacles. The returned image keeps
+    the same bright/free convention, but any pixel near an obstacle is darkened.
+    """
+    if inflation_radius <= 0:
+        return image
+
+    obstacle_mask = image < free_threshold
+    inflated_mask = obstacle_mask.copy()
+
+    for dy in range(-inflation_radius, inflation_radius + 1):
+        for dx in range(-inflation_radius, inflation_radius + 1):
+            if dx * dx + dy * dy > inflation_radius * inflation_radius:
+                continue
+
+            src_y0 = max(0, -dy)
+            src_y1 = min(image.shape[0], image.shape[0] - dy)
+            src_x0 = max(0, -dx)
+            src_x1 = min(image.shape[1], image.shape[1] - dx)
+
+            dst_y0 = max(0, dy)
+            dst_y1 = min(image.shape[0], image.shape[0] + dy)
+            dst_x0 = max(0, dx)
+            dst_x1 = min(image.shape[1], image.shape[1] + dx)
+
+            inflated_mask[dst_y0:dst_y1, dst_x0:dst_x1] |= obstacle_mask[
+                src_y0:src_y1, src_x0:src_x1
+            ]
+
+    inflated = image.copy()
+    inflated[inflated_mask] = 0
+    return inflated
+
+
 def create_nodes(
     N,
     map_image,
@@ -126,6 +163,7 @@ def create_nodes(
     free_threshold=128,
     free_fraction_threshold=0.5,
     allow_corner_cutting=False,
+    obstacle_inflation_radius=4,
 ):
     """
     Create an N x N graph of uniformly spaced pixel-space A* nodes.
@@ -146,6 +184,11 @@ def create_nodes(
         raise ValueError("connectivity must be 4 or 8")
 
     image = _to_grayscale(map_image)
+    image = inflate_obstacles(
+        image,
+        inflation_radius=obstacle_inflation_radius,
+        free_threshold=free_threshold,
+    )
     height, width = image.shape
     node_grid = np.empty((N, N), dtype=object)
     nodes = []
@@ -253,16 +296,17 @@ def path_to_pixels(path):
             points.append(item.coordinates())
         else:
             x, y = item
-            points.append((float(x), float(y)))
+            points.append((round(float(x),3), round(float(y),3)))
     return points
 
 
-def spline_path(path, samples_per_segment=10):
+def spline_path(path, samples_per_segment=10, control_point_stride=10):
     """
     Return a Catmull-Rom spline interpolation of an A* path in pixel space.
 
-    The spline passes through the A* points. It does not re-check collision
-    against the map image, so use this as a geometric smoothing step after A*.
+    The spline passes through every control_point_stride-th A* point, plus the
+    start and goal. It does not re-check collision against the map image, so use
+    this as a geometric smoothing step after A*.
     """
     points = path_to_pixels(path)
     if points is None:
@@ -271,8 +315,16 @@ def spline_path(path, samples_per_segment=10):
         return points
     if samples_per_segment < 1:
         raise ValueError("samples_per_segment must be at least 1")
+    if control_point_stride < 1:
+        raise ValueError("control_point_stride must be at least 1")
 
-    pts = np.array(points, dtype=float)
+    control_points = points[::control_point_stride]
+    if control_points[-1] != points[-1]:
+        control_points.append(points[-1])
+    if len(control_points) < 3:
+        control_points = points
+
+    pts = np.array(control_points, dtype=float)
     smoothed = []
 
     for i in range(len(pts) - 1):
@@ -295,6 +347,14 @@ def spline_path(path, samples_per_segment=10):
 
     smoothed.append((float(pts[-1, 0]), float(pts[-1, 1])))
     return smoothed
+
+
+def build_spline(path, samples_per_segment=10, control_point_stride=10):
+    return spline_path(
+        path,
+        samples_per_segment=samples_per_segment,
+        control_point_stride=control_point_stride,
+    )
 
 
 def save_plan_overlay(map_image, path, output_path, color=(0, 0, 255), thickness=2):
@@ -334,6 +394,7 @@ def save_spline_overlay(
     path,
     output_path,
     samples_per_segment=10,
+    control_point_stride=10,
     raw_color=(255, 0, 0),
     spline_color=(255, 0, 255),
 ):
@@ -349,7 +410,11 @@ def save_spline_overlay(
         raise ValueError(f"Expected a 2D or 3D image array, got shape {image.shape}")
 
     raw_points = path_to_pixels(path)
-    smooth_points = spline_path(path, samples_per_segment=samples_per_segment)
+    smooth_points = spline_path(
+        path,
+        samples_per_segment=samples_per_segment,
+        control_point_stride=control_point_stride,
+    )
 
     if raw_points is None or len(raw_points) == 0:
         cv2.imwrite(output_path, overlay)
@@ -384,19 +449,19 @@ if __name__ == "__main__":
     start = free_nodes[0]
     goal = free_nodes[-1]
     path = astar(nodes, start, goal)
+    _spline_path = spline_path(path, samples_per_segment=20, control_point_stride=4)
 
     if path is None:
         print("No path found")
     else:
         print(f"Path found with {len(path)} nodes")
-        print(path_to_pixels(path))
+        print(path_to_pixels(_spline_path))
         os.makedirs("outputs", exist_ok=True)
         save_plan_overlay(arr, path, "outputs/astar_overlay.png")
         save_plan_overlay(
             arr,
-            spline_path(path, samples_per_segment=1000),
+            _spline_path,
             "outputs/astar_spline_overlay.png",
             color=(255, 0, 255),
-            thickness=3,
+            thickness=2,
         )
-        save_spline_overlay(arr, path, "outputs/astar_raw_vs_spline_overlay.png")
