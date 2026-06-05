@@ -104,7 +104,7 @@ class EmbeddedSimEnvironment(object):
             # x = x_vec[:, -1].reshape((self.model.n, 1)) # TODO: REMOVE THIS FOR ACTUAL ROBOT
             # print("predicted_state")
             # print(x)
-            u, error = self.controller(x, self.ran_iterations * self.dt, prerecorded=self.shared_state.prerecorded_flag)
+            u, error = self.controller(x, self.ran_iterations * self.dt)
 
             if hasattr(self.shared_state, '_workspace_z'):
                 u = _z_nullspace_project(

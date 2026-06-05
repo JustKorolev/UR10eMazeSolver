@@ -216,6 +216,40 @@ def T_to_pose6(T: np.ndarray) -> np.ndarray:
     return np.array([p[0], p[1], p[2], rvec[0], rvec[1], rvec[2]], dtype=float)
 
 
+def aruco_meters_per_pixel(tag_length_m, tag_length_px):
+    """Compute image scale from a known ArUco tag length."""
+    if tag_length_px <= 0:
+        raise ValueError("tag_length_px must be positive")
+    return float(tag_length_m) / float(tag_length_px)
+
+
+def pixel_points_to_lengths(pixel_points, meters_per_pixel, origin_pixel=(0, 0),
+                            flip_y=True):
+    """
+    Convert image pixel points to local planar lengths.
+
+    Parameters
+    ----------
+    pixel_points      : sequence of (x_px, y_px)
+    meters_per_pixel  : scale, e.g. aruco_tag_length_m / aruco_tag_length_px
+    origin_pixel      : pixel coordinate used as local (0, 0)
+    flip_y            : True makes positive local y point upward in the image
+
+    Returns
+    -------
+    ndarray with shape (num_points, 2), in metres.
+    """
+    points = np.asarray(pixel_points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("pixel_points must have shape (num_points, 2)")
+
+    origin = np.asarray(origin_pixel, dtype=float).reshape(2,)
+    local = (points - origin) * float(meters_per_pixel)
+    if flip_y:
+        local[:, 1] *= -1
+    return local
+
+
 def inv_T(T: np.ndarray) -> np.ndarray:
     T = np.asarray(T, dtype=float).reshape(4, 4)
     R = T[:3, :3]

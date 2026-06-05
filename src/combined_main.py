@@ -1,17 +1,26 @@
 """
-Combined script that runs both IMU GUI and MPC simulation simultaneously.
-Run this instead of running main.py and imu.py separately.
+Main orchestration for maze planning and MPC trajectory execution.
+
+Expected high-level sequence:
+1. Move the robot to a known overhead camera pose.
+2. Capture an overhead maze image.
+3. Run A* on the image and fit a spline in pixel coordinates.
+4. Convert spline pixels to local maze lengths using ArUco scale.
+5. Transform local maze coordinates into robot world coordinates.
+6. Add a drawing-plane z coordinate and convert poses to joint targets via IK.
+7. Feed the joint trajectory to MPC and send velocity commands to the robot.
 """
 
 import threading
-import sys
 import time
-import tkinter as tk
-import numpy as np
 from collections import deque
-from src.utils import *
-from src.tracking import GUI
+
+import numpy as np
+
+from src.astar import astar, build_spline, create_nodes
 from src.trajectory_tracking import MPCSimulationThread
+from src.ur10e import UR10e
+from src.utils import pixel_points_to_lengths, pose6_to_T
 
 try:
     from src.urx_control_thread import URXControlThread
@@ -19,157 +28,27 @@ try:
 except ImportError:
     HAS_URX = False
 
-# TODO: MODIFY ALL THE PARAMETERS BELOW BEFORE TESTING
-SAMPLING_RATE = 75 # Hz
-MPC_HORIZON = SAMPLING_RATE // 12 # sec = horizon_samples / sampling_rate
-# The workspace offset MUST place the robot away from wrist singularities.
-# [0.5, 0.5, 0.5, 0, 0, 0] has zero rotation which aligns wrist axes (singular).
-# Adding a small rotation breaks the singularity and makes IK stable.
+
+SAMPLING_RATE = 75  # Hz
+MPC_HORIZON = SAMPLING_RATE // 12
+
 WORKSPACE_OFFSET = pose6_to_T([0, -0.8, -0.015, np.pi, 0.05, 0.05])
+DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
 
-# ── UR10e joint limits (CHANGE THESE for your actual robot) ──────────────
-# Hardware max from datasheet:
-#   Joints 0-1 (base, shoulder): 2.094 rad/s  (120 deg/s)
-#   Joints 2-5 (elbow, wrists):  3.142 rad/s  (180 deg/s)
-# Working limits (conservative for safety):
-VJ = 0.7   # rad/s  -- uniform working velocity limit for MPC
-AJ = 1.2   # rad/s² -- uniform working acceleration limit for MPC
+VJ = 0.7  # rad/s
+AJ = 1.2  # rad/s^2
 
-# Per-joint working velocity limits (rad/s).
-# UPDATE THESE when you know exact per-joint limits for your setup.
-JOINT_VEL_LIMITS = np.array([
-    VJ,   # joint 0 - base (shoulder pan)
-    VJ,   # joint 1 - shoulder (lift)
-    VJ,   # joint 2 - elbow
-    VJ,   # joint 3 - wrist 1
-    VJ,   # joint 4 - wrist 2
-    VJ,   # joint 5 - wrist 3
-])
-
-# Per-joint absolute position limits (rad). UR10e datasheet: ±360 deg.
-# Working limits set to ±350 deg for a safety margin.
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])
-
-# Minimum allowed distance (m) between non-adjacent link segments.
 MIN_LINK_DISTANCE = 0.05
-
-
-def _cartesian_interp_z_clamped(theta_prev, theta_next, N, robot, workspace_z):
-    """Interpolate in Cartesian space, clamping the Z coordinate at each step.
-
-    Returns a list of N joint arrays (excluding theta_prev, including
-    theta_next), or None if any IK fails or a branch discontinuity is
-    detected.
-    """
-    prev_class_deg = np.rad2deg(robot.DHModifiedToClassical(theta_prev))
-    next_class_deg = np.rad2deg(robot.DHModifiedToClassical(theta_next))
-
-    T_prev = robot.FK(prev_class_deg)
-    T_next = robot.FK(next_class_deg)
-
-    pose_prev = T_to_pose6(T_prev)
-    pose_next = T_to_pose6(T_next)
-
-    points = []
-    prev_joints = theta_prev
-
-    for i in range(1, N + 1):
-        alpha = i / N
-        pose_interp = (1 - alpha) * pose_prev + alpha * pose_next
-        pose_interp[2] = workspace_z
-
-        T_interp = pose6_to_T(pose_interp)
-
-        try:
-            joints = robot.IK("elbow_up_2", T_interp)
-        except Exception:
-            return None
-
-        if joints is None or np.any(np.isnan(joints)):
-            return None
-
-        delta = joints - prev_joints
-        delta = (delta + np.pi) % (2 * np.pi) - np.pi
-        if np.max(np.abs(delta)) > np.pi / 2:
-            return None
-
-        points.append(joints)
-        prev_joints = joints
-
-    return points
-
-
-def interpolate_joint_segment(theta_prev, theta_next, dt, v_max,
-                              robot=None, workspace_z=None):
-    """Subdivide a joint-space segment so every joint respects its velocity limit.
-
-    When *robot* and *workspace_z* are provided the function first attempts
-    Cartesian-space interpolation with the end-effector Z coordinate clamped,
-    falling back to plain joint-space interpolation on IK failure.
-
-    Parameters
-    ----------
-    theta_prev  : (6,) current joint angles
-    theta_next  : (6,) target joint angles
-    dt          : float, timestep between the two points
-    v_max       : (6,) per-joint velocity limits (rad/s)
-    robot       : UR10e instance (optional, enables Cartesian interpolation)
-    workspace_z : float (optional, desired Z in base frame)
-
-    Returns
-    -------
-    list of (6,) arrays -- intermediate waypoints (excluding theta_prev,
-    including theta_next).  If the segment is already feasible the list
-    contains only theta_next.
-    """
-    delta = theta_next - theta_prev
-    delta = (delta + np.pi) % (2 * np.pi) - np.pi
-
-    if dt <= 0:
-        return [theta_next]
-
-    v_required = np.abs(delta) / dt
-    ratios = v_required / v_max
-    r = np.max(ratios)
-
-    N = max(1, int(np.ceil(r)))
-
-    if N == 1:
-        return [theta_next]
-
-    if robot is not None and workspace_z is not None:
-        try:
-            cart_pts = _cartesian_interp_z_clamped(
-                theta_prev, theta_next, N, robot, workspace_z
-            )
-            if cart_pts is not None:
-                return cart_pts
-        except Exception:
-            pass
-
-    points = []
-    for i in range(1, N + 1):
-        pt = theta_prev + (i / N) * delta
-        pt = (pt + np.pi) % (2 * np.pi) - np.pi
-        points.append(pt)
-    return points
-
-
-MAX_QUEUE_LEN = 500
-
-STATIONARY_JOINT_EPS = 0.02
-STATIONARY_COUNT_THRESH = 20
+ROBOT_IP = "192.168.0.2"
 
 
 class SharedTrajectoryState:
-    """Thread-safe shared state for IMU and MPC communication.
+    """Thread-safe state shared by maze planning, MPC, and robot control."""
 
-    trajectory_queue is a FIFO: IMU appends to the right, MPC reads from
-    the left and pops after executing each step.
-    """
-
-    def __init__(self):
+    def __init__(self, mpc_horizon=MPC_HORIZON, workspace_offset=WORKSPACE_OFFSET):
         self.lock = threading.Lock()
+        self.mpc_horizon = mpc_horizon
 
         self.following_trajectory = False
         self.trajectory_queue = deque()
@@ -179,36 +58,26 @@ class SharedTrajectoryState:
         self.robot_connected = False
         self.shutdown = False
         self.joint_pos = None
+
+        # Kept for URXControlThread compatibility until homing/capture poses are refactored.
         self.home_requested = False
         self.homing = False
+
         self.collision_detected = False
         self.collision_reason = ""
-        self.prerecorded_flag = False
 
-        self._stable_target = None
-        self._stable_count = 0
-
-        # Compute home joint angles from WORKSPACE_OFFSET via IK
-        from src.ur10e import UR10e
-        self._collision_robot = UR10e()
-        self.home_joints = self._collision_robot.IK("elbow_up_2", WORKSPACE_OFFSET)
-        self._workspace_z = float(WORKSPACE_OFFSET[2, 3])
-        print(f"[HOME] Home joints (deg): {np.degrees(self.home_joints).round(1)}")
-        print(f"[HOME] Workspace Z (clamped): {self._workspace_z:.4f} m")
-
-        self._last_joint_target = None
+        self.robot_model = UR10e(workspace_offset=workspace_offset)
+        self._collision_robot = self.robot_model
+        self.home_joints = self.robot_model.IK("elbow_up_2", workspace_offset)
+        self._workspace_z = float(workspace_offset[2, 3])
 
     @property
     def trajectory_window(self):
-        """MPC-facing view: return the next MPC_HORIZON+1 points as a list.
-
-        If the queue has fewer points than needed, pad by repeating the
-        last available point so the MPC always gets a full horizon.
-        """
+        """Return the next MPC horizon of joint targets, padding with the last point."""
         with self.lock:
             buf = list(self.trajectory_queue)
 
-        n_need = MPC_HORIZON + 1
+        n_need = self.mpc_horizon + 1
         if len(buf) == 0:
             return np.zeros((n_need, 6))
         if len(buf) >= n_need:
@@ -217,133 +86,36 @@ class SharedTrajectoryState:
         pad = [buf[-1]] * (n_need - len(buf))
         return np.array(buf + pad)
 
-    def consume_one(self):
-        """Pop the first point after the MPC has executed it."""
-        with self.lock:
-            if len(self.trajectory_queue) > 1:
-                self.trajectory_queue.popleft()
-
-    def _update_stationary_target_state(self, theta_next):
-        if self._stable_target is None:
-            self._stable_target = theta_next.copy()
-            self._stable_count = 1
-            return
-
-        delta = theta_next - self._stable_target
-        delta = (delta + np.pi) % (2 * np.pi) - np.pi
-
-        if np.max(np.abs(delta)) < STATIONARY_JOINT_EPS:
-            self._stable_count += 1
-        else:
-            self._stable_target = theta_next.copy()
-            self._stable_count = 1
-
-    def append_joint_target(self, theta_next, dt):
-        theta_next = np.asarray(theta_next, dtype=float).reshape(-1)
-        if theta_next.shape[0] != 6:
-            print(f"[WARN] append_joint_target got bad shape: {theta_next.shape}")
-            return
-
-        collision_reason = None
+    def load_joint_trajectory(self, joint_trajectory):
+        """Load a complete joint trajectory for MPC to consume one point at a time."""
+        joint_trajectory = np.asarray(joint_trajectory, dtype=float)
+        if joint_trajectory.ndim != 2 or joint_trajectory.shape[1] != 6:
+            raise ValueError("joint_trajectory must have shape (num_points, 6)")
 
         with self.lock:
-            if self.collision_detected:
-                return
-
-            self._update_stationary_target_state(theta_next)
-
-            # If the desired target has stayed almost unchanged for long enough,
-            # stop feeding the queue. This gives the robot time to catch up.
-            if self._stable_count >= STATIONARY_COUNT_THRESH:
-                if self._stable_count == STATIONARY_COUNT_THRESH:
-                    print(
-                        f"[QUEUE HOLD] Target stationary for "
-                        f"{self._stable_count} samples; pausing queue appends. "
-                        f"Current queue len={len(self.trajectory_queue)}"
-                    )
-                return
-
-            if self._last_joint_target is None:
-                safe, reason = collision_check(
-                    self._collision_robot, theta_next,
-                    JOINT_POS_LIMITS, MIN_LINK_DISTANCE
-                )
-                if not safe:
-                    collision_reason = reason
-                else:
-                    self.trajectory_queue.append(theta_next.copy())
-                    self._last_joint_target = theta_next.copy()
-
-            else:
-                points = interpolate_joint_segment(
-                    self._last_joint_target, theta_next, dt, JOINT_VEL_LIMITS,
-                    robot=self._collision_robot, workspace_z=self._workspace_z
-                )
-
-                if len(points) > 1:
-                    delta = theta_next - self._last_joint_target
-                    delta = (delta + np.pi) % (2 * np.pi) - np.pi
-                    v_req = np.abs(delta) / dt
-                    worst = np.argmax(v_req / JOINT_VEL_LIMITS)
-                    print(
-                        f"[INTERP] Joint {worst} needs "
-                        f"{v_req[worst]:.2f} rad/s (limit {JOINT_VEL_LIMITS[worst]:.2f}), "
-                        f"N={len(points)}"
-                    )
-
-                for pt in points:
-                    safe, reason = collision_check(
-                        self._collision_robot, pt,
-                        JOINT_POS_LIMITS, MIN_LINK_DISTANCE
-                    )
-                    if not safe:
-                        collision_reason = reason
-                        break
-                    self.trajectory_queue.append(pt.copy())
-
-                if collision_reason is None:
-                    self._last_joint_target = theta_next.copy()
-
-            while len(self.trajectory_queue) > MAX_QUEUE_LEN:
-                self.trajectory_queue.popleft()
-
-        if collision_reason is not None:
-            self.hard_stop(collision_reason)
-
-    def request_home(self):
-        with self.lock:
-            self.home_requested = True
-            self.homing = True
-            self.following_trajectory = False
-            self.robot_enabled = True
-            print(f"[HOME] Homing to {np.degrees(self.home_joints).round(1)} deg")
-
-    def set_prerecorded_flag(self):
-        if self.prerecorded_flag:
-            self.prerecorded_flag = False
-        else:
-            self.prerecorded_flag = True
-        print("Pre-recorded flag set to " + str(self.prerecorded_flag))
+            self.trajectory_queue = deque(q.copy() for q in joint_trajectory)
+            self.collision_detected = False
+            self.collision_reason = ""
 
     def start_following(self):
         with self.lock:
-            self.collision_detected = False
-            self.collision_reason = ""
-            self.trajectory_queue = deque()
             self.following_trajectory = True
             self.robot_enabled = True
-            self._last_joint_target = None
-            self._stable_target = None
-            self._stable_count = 0
 
     def stop_following(self):
         with self.lock:
             self.following_trajectory = False
             self.robot_enabled = False
             self.u_curr = np.zeros((6, 1))
-            self._last_joint_target = None
-            self._stable_target = None
-            self._stable_count = 0
+
+    def consume_one(self):
+        """Pop the first target after MPC has executed one timestep."""
+        with self.lock:
+            if len(self.trajectory_queue) > 1:
+                self.trajectory_queue.popleft()
+            else:
+                self.following_trajectory = False
+                self.robot_enabled = False
 
     def hard_stop(self, reason):
         with self.lock:
@@ -352,30 +124,114 @@ class SharedTrajectoryState:
             self.following_trajectory = False
             self.robot_enabled = False
             self.u_curr = np.zeros((6, 1))
-            self._last_joint_target = None
-            self._stable_target = None
-            self._stable_count = 0
         print(f"[COLLISION] HARD STOP: {reason}")
 
-    def clear_collision(self):
-        with self.lock:
-            self.collision_detected = False
-            self.collision_reason = ""
-        print("[COLLISION] Cleared.")
+
+def request_overhead_capture_pose(shared_state):
+    """Placeholder: move robot to the known overhead pose for maze imaging."""
+    # TODO: Replace this with the calibrated overhead camera pose, not home_joints.
+    with shared_state.lock:
+        shared_state.home_requested = True
+        shared_state.homing = True
+        shared_state.robot_enabled = True
 
 
-def run_imu_gui(shared_state):
-    """Run the IMU GUI in the main thread (required for Tkinter)."""
-    root = tk.Tk()
-    app = GUI(root, shared_state, SAMPLING_RATE, MPC_HORIZON, WORKSPACE_OFFSET)
-    root.mainloop()
+def capture_maze_image():
+    """Placeholder for camera capture at the overhead pose."""
+    # TODO: Capture and return the overhead maze image as a numpy array.
+    raise NotImplementedError("Maze image capture is not implemented yet.")
+
+
+def nearest_free_node(nodes, pixel_xy):
+    """Return the free sampled A* node nearest to a pixel coordinate."""
+    x, y = pixel_xy
+    free_nodes = [node for node in nodes if not node.blocked]
+    if not free_nodes:
+        return None
+    return min(free_nodes, key=lambda node: (node.x - x) ** 2 + (node.y - y) ** 2)
+
+
+def plan_spline_pixel_path(
+    maze_image,
+    start_pixel,
+    goal_pixel,
+    N=100,
+    samples_per_segment=20,
+    control_point_stride=10,
+):
+    """Run A* on the maze image and return a smoothed pixel path."""
+    nodes = create_nodes(N, maze_image)
+    start_node = nearest_free_node(nodes, start_pixel)
+    goal_node = nearest_free_node(nodes, goal_pixel)
+    if start_node is None or goal_node is None:
+        return None
+
+    path = astar(nodes, start_node, goal_node)
+    if path is None:
+        return None
+    return build_spline(
+        path,
+        samples_per_segment=samples_per_segment,
+        control_point_stride=control_point_stride,
+    )
+
+
+def local_maze_to_world(local_xy_points, T_world_maze):
+    """Transform local maze XY points into robot world XY points."""
+    points = np.asarray(local_xy_points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("local_xy_points must have shape (num_points, 2)")
+
+    homog = np.column_stack((points, np.zeros(len(points)), np.ones(len(points))))
+    world = (np.asarray(T_world_maze, dtype=float).reshape(4, 4) @ homog.T).T
+    return world[:, :2]
+
+
+def add_drawing_plane_z(xy_points, z=DRAWING_PLANE_Z):
+    """Convert XY points to XYZ points on the drawing plane."""
+    xy_points = np.asarray(xy_points, dtype=float)
+    return np.column_stack((xy_points, np.full(len(xy_points), z)))
+
+
+def world_points_to_joint_trajectory(
+    world_xyz_points,
+    robot=None,
+    orientation_rotvec=(np.pi, 0.05, 0.05),
+    ik_solution="elbow_up_2",
+):
+    """Convert world XYZ waypoints to a joint trajectory using UR10e IK."""
+    robot = robot or UR10e()
+    joint_targets = []
+
+    for x, y, z in np.asarray(world_xyz_points, dtype=float):
+        T_world_tool = pose6_to_T([x, y, z, *orientation_rotvec])
+        joints = robot.IK(ik_solution, T_world_tool)
+        joint_targets.append(joints)
+
+    return np.asarray(joint_targets)
+
+
+def build_joint_trajectory_from_maze(
+    maze_image,
+    start_pixel,
+    goal_pixel,
+    meters_per_pixel,
+    T_world_maze,
+    robot=None,
+):
+    """Full maze-image-to-joint-trajectory pipeline for implemented stages."""
+    spline_pixels = plan_spline_pixel_path(maze_image, start_pixel, goal_pixel)
+    if spline_pixels is None:
+        return None
+
+    local_xy = pixel_points_to_lengths(spline_pixels, meters_per_pixel)
+    world_xy = local_maze_to_world(local_xy, T_world_maze)
+    world_xyz = add_drawing_plane_z(world_xy)
+    return world_points_to_joint_trajectory(world_xyz, robot=robot)
 
 
 def run_mpc_background(shared_state, mpc_horizon, status_callback=None):
-    """
-    Run MPC simulation in a background thread, toggling between active/idle based on
-    shared_state.following_trajectory.
-    """
+    """Start MPC once a full joint trajectory window is available."""
     sim_thread = None
     last_status = None
 
@@ -384,12 +240,15 @@ def run_mpc_background(shared_state, mpc_horizon, status_callback=None):
             with shared_state.lock:
                 following = shared_state.following_trajectory
                 traj_len = len(shared_state.trajectory_queue)
+                shutdown = shared_state.shutdown
+
+            if shutdown:
+                break
 
             if following:
                 if sim_thread is None:
-                    if traj_len >= mpc_horizon+1:
-                        print("[MPC Thread] Trajectory following activated with a valid trajectory!")
-                        msg = "MPC: Trajectory following activated, starting simulation..."
+                    if traj_len >= mpc_horizon + 1:
+                        msg = "MPC: starting trajectory tracking"
                         if status_callback and msg != last_status:
                             status_callback(msg)
                             last_status = msg
@@ -397,107 +256,71 @@ def run_mpc_background(shared_state, mpc_horizon, status_callback=None):
                         sim_thread = MPCSimulationThread(
                             shared_state=shared_state,
                             mpc_horizon=mpc_horizon,
-                            dt= 1 / SAMPLING_RATE,
+                            dt=1 / SAMPLING_RATE,
                             workspace_offset=WORKSPACE_OFFSET,
                             vj=VJ,
-                            aj=AJ
+                            aj=AJ,
                         )
                         sim_thread.start()
                     else:
-                        msg = "MPC: Waiting for full trajectory window..."
-                        if status_callback and msg != last_status:
-                            status_callback(msg)
-                            last_status = msg
                         time.sleep(0.01)
-
                 elif sim_thread.is_alive():
-                    msg = f"MPC Status: {sim_thread.status}"
-                    if status_callback and msg != last_status:
-                        status_callback(msg)
-                        last_status = msg
                     time.sleep(0.05)
-
                 else:
-                    if sim_thread.status == "completed":
-                        msg = "MPC simulation completed!"
-                        if status_callback and msg != last_status:
-                            status_callback(msg)
-                            last_status = msg
-                        print("[MPC Thread] Simulation completed!")
-                    else:
-                        msg = f"MPC Error: {sim_thread.status} - {sim_thread.error_msg}"
-                        if status_callback and msg != last_status:
-                            status_callback(msg)
-                            last_status = msg
-                        print(f"[MPC Thread] Simulation crashed with status: {sim_thread.status}")
-
+                    if sim_thread.status != "completed":
                         shared_state.stop_following()
-                        print("[MPC Thread] Automatically disabled trajectory following due to crash")
-
+                        print(f"[MPC] Error: {sim_thread.status} - {sim_thread.error_msg}")
                     sim_thread = None
-                    time.sleep(0.01)
-
             else:
-                if sim_thread is not None:
-                    if sim_thread.is_alive():
-                        print("[MPC Thread] Trajectory following disabled, stopping simulation...")
-                        msg = "MPC: Paused (waiting for trajectory following)"
-                        if status_callback and msg != last_status:
-                            status_callback(msg)
-                            last_status = msg
-                        sim_thread.join(timeout=2)
-
-                    sim_thread = None
-
-                msg = "MPC: Idle (waiting for 'Start Following')"
-                if status_callback and msg != last_status:
-                    status_callback(msg)
-                    last_status = msg
-
+                if sim_thread is not None and sim_thread.is_alive():
+                    sim_thread.join(timeout=2)
+                sim_thread = None
                 time.sleep(0.01)
 
     except Exception as e:
-        msg = f"MPC Error: {str(e)}"
-        if status_callback and msg != last_status:
-            status_callback(msg)
-        print(f"[MPC Thread] Error: {e}")
+        print(f"[MPC] Error: {e}")
 
 
 def main():
-    """Launch both IMU GUI and MPC simulation."""
-    # Create shared state
     shared_state = SharedTrajectoryState()
 
-    # Start MPC simulation in a daemon thread
-    # It will wait until user clicks "Start Following" button
-    mpc_thread = threading.Thread(target=run_mpc_background, args=(shared_state, MPC_HORIZON), daemon=True)
+    mpc_thread = threading.Thread(
+        target=run_mpc_background,
+        args=(shared_state, MPC_HORIZON),
+        daemon=True,
+    )
     mpc_thread.start()
 
     urx_thread = None
     if HAS_URX:
         urx_thread = URXControlThread(
             shared_state=shared_state,
-            robot_ip="192.168.0.2",
+            robot_ip=ROBOT_IP,
             hz=100,
             vj=VJ,
             aj=AJ,
             joint_pos_limits=JOINT_POS_LIMITS,
-            min_link_dist=MIN_LINK_DISTANCE
+            min_link_dist=MIN_LINK_DISTANCE,
         )
         urx_thread.start()
     else:
         print("[WARN] urx not installed -- running without robot arm")
 
-    print("Starting combined IMU + MPC application...")
-    print("MPC simulation is waiting for 'Start Following' button to be pressed in the GUI.")
-    run_imu_gui(shared_state)
+    # TODO: Hook these stages to the real camera, ArUco scale calculation,
+    # start/goal detection, and maze-to-world calibration.
+    print("Maze/MPC orchestrator started. Pipeline integration placeholders remain.")
 
-    with shared_state.lock:
-        shared_state.shutdown = True
-
-    if urx_thread is not None:
-        urx_thread.stop()
-        urx_thread.join(timeout=2)
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        with shared_state.lock:
+            shared_state.shutdown = True
+        if urx_thread is not None:
+            urx_thread.stop()
+            urx_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
