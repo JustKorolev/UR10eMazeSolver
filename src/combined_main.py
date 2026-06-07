@@ -131,7 +131,7 @@ class SharedTrajectoryState:
 
         self.robot_model = UR10e(workspace_offset=workspace_offset)
         self._collision_robot = self.robot_model
-        self.home_joints = self.robot_model.IK("elbow_up_2", workspace_offset)
+        self.home_joints = self.robot_model.IK("elbow_up_1", workspace_offset)
         self._workspace_z = float(workspace_offset[2, 3])
         self._workspace_endpoint_min = float(workspace_offset[ENDPOINT_HEIGHT_AXIS, 3])
         from src.cbf import CBFSafetyFilter, EndpointHeightCBF
@@ -188,7 +188,7 @@ class SharedTrajectoryState:
             self.motion_error = None
             self.robot_enabled = False
 
-    def wait_for_motion(self, timeout_s=MOVE_TIMEOUT_S):
+    def wait_for_motion(self, timeout_s=MOVE_TIMEOUT_S, raise_on_error=False):
         start = time.time()
         while True:
             with self.lock:
@@ -198,11 +198,19 @@ class SharedTrajectoryState:
 
             if done:
                 if error:
-                    raise RuntimeError(f"Robot move '{label}' failed: {error}")
-                return
+                    msg = f"Robot move '{label}' failed: {error}"
+                    if raise_on_error:
+                        raise RuntimeError(msg)
+                    print(f"[WARN] {msg}")
+                    return False
+                return True
 
             if time.time() - start > timeout_s:
-                raise TimeoutError(f"Timed out waiting for robot move '{label}'")
+                msg = f"Timed out waiting for robot move '{label}'"
+                if raise_on_error:
+                    raise TimeoutError(msg)
+                print(f"[WARN] {msg}")
+                return False
 
             time.sleep(0.05)
 
@@ -434,7 +442,7 @@ def world_points_to_joint_trajectory(
     world_xyz_points,
     robot=None,
     orientation_rotvec=DRAWING_TOOL_ORIENTATION,
-    ik_solution="elbow_up_2",
+    ik_solution="elbow_up_1",
     Ttp_pen=T_TOOL_PEN,
 ):
     """Convert world XYZ waypoints to a joint trajectory using UR10e IK."""
@@ -672,10 +680,20 @@ def modified_to_classical_joints(robot, q_modified):
     return robot.DHModifiedToClassical(np.asarray(q_modified, dtype=float).reshape(6,))
 
 
-def request_and_wait_move(shared_state, classical_joints, label, timeout_s=MOVE_TIMEOUT_S):
+def request_and_wait_move(
+    shared_state,
+    classical_joints,
+    label,
+    timeout_s=MOVE_TIMEOUT_S,
+    raise_on_error=False,
+):
     shared_state.request_joint_move(classical_joints, label=label)
-    shared_state.wait_for_motion(timeout_s=timeout_s)
+    ok = shared_state.wait_for_motion(
+        timeout_s=timeout_s,
+        raise_on_error=raise_on_error,
+    )
     time.sleep(MOVE_SETTLE_S)
+    return ok
 
 
 def combined_main(argv=None):
@@ -754,10 +772,7 @@ def combined_main(argv=None):
         shared_state.stop_following()
     finally:
         if shared_state is not None and urx_thread is not None:
-            try:
-                request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
-            except Exception as e:
-                print(f"[WARN] Could not return to camera pose: {e}")
+            request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
             with shared_state.lock:
                 shared_state.shutdown = True
             urx_thread.stop()

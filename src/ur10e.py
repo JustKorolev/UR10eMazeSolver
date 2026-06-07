@@ -171,7 +171,7 @@ class UR10e():
         sol2 = np.array([theta_1_2, theta_2_3, theta_3_3, theta_4_3, theta_5_2, theta_6_2])
         sol3 = np.array([theta_1_2, theta_2_4, theta_3_4, theta_4_4, theta_5_2, theta_6_2])
 
-        if solution_type == 'elbow_up':
+        if solution_type in ('elbow_up', 'elbow_up_1'):
             return sol0
         elif solution_type == 'elbow_down':
             return sol1
@@ -213,7 +213,7 @@ class UR10e():
         :rtype: np.ndarray
         """
         T = self.workspace_offset
-        x0 = self.IK("elbow_up_2", T)
+        x0 = self.IK("elbow_up_1", T)
         print(x0)
         return x0
 
