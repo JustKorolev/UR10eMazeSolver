@@ -234,7 +234,7 @@ class URXControlThread(threading.Thread):
         self.robot.speedj(
             joint_vels.tolist(),
             acc=self.aj,
-            min_time=0.4,
+            min_time=0.05,
         )
 
     def send_zero(self):
