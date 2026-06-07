@@ -237,6 +237,118 @@ def create_nodes(
     return nodes
 
 
+def _robust_line_fit(t, p, iters=3, keep=2.5):
+    """Fit p ~ a*t + b, iteratively rejecting outliers (the wall openings)."""
+    t = np.asarray(t, float)
+    p = np.asarray(p, float)
+    mask = np.ones(len(t), bool)
+    a, b = 0.0, float(np.median(p))
+    for _ in range(iters):
+        a, b = np.polyfit(t[mask], p[mask], 1)
+        resid = p - (a * t + b)
+        s = np.std(resid[mask]) or 1.0
+        mask = np.abs(resid) < keep * s
+    return a, b
+
+
+def _edge_openings(profile, valid, expect_high, min_len=6, dev=8):
+    """Find wall gaps on one edge from its extreme-dark profile.
+
+    profile[t] is the extreme dark coordinate along the edge (e.g. the rightmost
+    dark pixel x for each row). A solid wall traces a near-straight (possibly
+    tilted) line; an opening is where that wall recedes inward by > dev pixels.
+    Fitting the line robustly (ignoring the gaps) makes this tilt-invariant.
+    Returns a list of (start, end) along-edge index ranges.
+    """
+    t = np.array([i for i in range(len(profile)) if valid[i]])
+    if len(t) < 10:
+        return []
+    p = np.array([profile[i] for i in t], float)
+    a, b = _robust_line_fit(t, p)
+    line = a * t + b
+    is_gap = (p < line - dev) if expect_high else (p > line + dev)
+
+    runs = []
+    start = None
+    for i, g in enumerate(list(is_gap) + [False]):
+        if g and start is None:
+            start = i
+        elif not g and start is not None:
+            if i - start >= min_len:
+                seg = t[start:i]
+                runs.append((int(seg.min()), int(seg.max())))
+            start = None
+    return runs
+
+
+def detect_openings(map_image, free_threshold=128):
+    """Detect the maze's entrance/exit gaps in its outer boundary wall.
+
+    Scans all four sides for inward dips in the wall line and returns each gap
+    center as an (x, y) pixel point anchored ON the maze's outer wall edge for
+    that side (so e.g. a left-edge opening sits at the left wall, not at the
+    first interior wall past the gap). One point per detected opening.
+    """
+    image = _to_grayscale(map_image)
+    dark = image < free_threshold
+    h, w = dark.shape
+
+    # Outer wall rectangle: the long border lines (rows/cols that are mostly wall).
+    row_dark = dark.sum(axis=1)
+    col_dark = dark.sum(axis=0)
+    rows_hit = np.where(row_dark > 0.45 * w)[0]
+    cols_hit = np.where(col_dark > 0.45 * h)[0]
+    y0 = int(rows_hit.min()) if len(rows_hit) else 0
+    y1 = int(rows_hit.max()) if len(rows_hit) else h - 1
+    x0 = int(cols_hit.min()) if len(cols_hit) else 0
+    x1 = int(cols_hit.max()) if len(cols_hit) else w - 1
+
+    rightmost = [int(np.where(dark[y])[0].max()) if dark[y].any() else -1 for y in range(h)]
+    leftmost = [int(np.where(dark[y])[0].min()) if dark[y].any() else 10**9 for y in range(h)]
+    bottommost = [int(np.where(dark[:, x])[0].max()) if dark[:, x].any() else -1 for x in range(w)]
+    topmost = [int(np.where(dark[:, x])[0].min()) if dark[:, x].any() else 10**9 for x in range(w)]
+    valid_rows = [bool(dark[y].any()) for y in range(h)]
+    valid_cols = [bool(dark[:, x].any()) for x in range(w)]
+
+    points = []
+    for a, b in _edge_openings(rightmost, valid_rows, expect_high=True):
+        points.append((x1, (a + b) // 2))       # right edge -> outer right wall
+    for a, b in _edge_openings(leftmost, valid_rows, expect_high=False):
+        points.append((x0, (a + b) // 2))        # left edge -> outer left wall
+    for a, b in _edge_openings(bottommost, valid_cols, expect_high=True):
+        points.append(((a + b) // 2, y1))        # bottom edge -> outer bottom wall
+    for a, b in _edge_openings(topmost, valid_cols, expect_high=False):
+        points.append(((a + b) // 2, y0))        # top edge -> outer top wall
+    return points
+
+
+def largest_free_component(nodes):
+    """Return the biggest connected set of free nodes (the maze interior).
+
+    The cropped map has small free pockets in the margin that are walled off
+    from the maze; planning between arbitrary corners can land in different
+    pockets. Restricting start/goal to the largest component avoids that.
+    """
+    seen = set()
+    best = []
+    for node in nodes:
+        if node.blocked or node in seen:
+            continue
+        stack = [node]
+        seen.add(node)
+        comp = []
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for nb in cur.neighbors:
+                if nb not in seen and not nb.blocked:
+                    seen.add(nb)
+                    stack.append(nb)
+        if len(comp) > len(best):
+            best = comp
+    return best
+
+
 def astar(nodes, start, goal):
     for node in nodes:
         node.reset()
@@ -442,26 +554,66 @@ if __name__ == "__main__":
     import cv2
     import os
 
-    arr = cv2.imread("mazes/maze_1.png", cv2.IMREAD_GRAYSCALE)
-    nodes = create_nodes(100, arr)
-    free_nodes = [node for node in nodes if not node.blocked]
+    # Resolve paths relative to the project root (parent of this src/ dir) so the
+    # script works regardless of the current working directory.
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    outputs_dir = os.path.join(project_root, "outputs")
+    map_path = os.path.join(outputs_dir, "maze_map.png")
 
-    start = free_nodes[0]
-    goal = free_nodes[-1]
+    arr = cv2.imread(map_path, cv2.IMREAD_GRAYSCALE)
+    if arr is None:
+        raise FileNotFoundError(
+            f"Could not read maze map: {map_path}. "
+            "Run maze_pipeline.py first to generate outputs/maze_map.png."
+        )
+    print(f"Loaded maze map {map_path} ({arr.shape[1]}x{arr.shape[0]} px)")
+
+    nodes = create_nodes(100, arr, obstacle_inflation_radius=4)
+    free_nodes = [node for node in nodes if not node.blocked]
+    if not free_nodes:
+        raise RuntimeError("No free cells found in the maze map; check thresholds.")
+
+    # Restrict planning to the maze interior (largest connected free region).
+    interior = largest_free_component(nodes)
+    print(f"Free nodes: {len(free_nodes)}; maze interior component: {len(interior)}")
+
+    # Start/goal are the maze's two boundary openings (entrance + exit). Snap
+    # each detected opening point to the nearest free interior node.
+    openings = detect_openings(arr)
+    print(f"Detected {len(openings)} boundary openings: {openings}")
+    if len(openings) >= 2:
+        def nearest_interior(pt):
+            px, py = pt
+            return min(interior, key=lambda n: (n.x - px) ** 2 + (n.y - py) ** 2)
+        start = nearest_interior(openings[0])
+        goal = nearest_interior(openings[1])
+    else:
+        print("WARNING: expected 2 openings; falling back to corner-to-corner.")
+        start = min(interior, key=lambda n: n.row + n.col)
+        goal = max(interior, key=lambda n: n.row + n.col)
+    print(f"Start node (row,col)=({start.row},{start.col}) px=({start.x:.0f},{start.y:.0f})")
+    print(f"Goal  node (row,col)=({goal.row},{goal.col}) px=({goal.x:.0f},{goal.y:.0f})")
     path = astar(nodes, start, goal)
-    _spline_path = spline_path(path, samples_per_segment=20, control_point_stride=4)
 
     if path is None:
         print("No path found")
     else:
         print(f"Path found with {len(path)} nodes")
-        print(path_to_pixels(_spline_path))
-        os.makedirs("outputs", exist_ok=True)
-        save_plan_overlay(arr, path, "outputs/astar_overlay.png")
-        save_plan_overlay(
+
+        # Extend the path endpoints out to the actual boundary openings, which
+        # are already anchored on the maze's outer wall, so start/goal sit right
+        # at the entrance/exit gaps.
+        if len(openings) >= 2:
+            path = [openings[0]] + list(path) + [openings[1]]
+            print(f"Endpoints set to openings: {path[0]} -> {path[-1]}")
+
+        os.makedirs(outputs_dir, exist_ok=True)
+        save_plan_overlay(arr, path, os.path.join(outputs_dir, "astar_overlay.png"))
+        save_spline_overlay(
             arr,
-            _spline_path,
-            "outputs/astar_spline_overlay.png",
-            color=(255, 0, 255),
-            thickness=2,
+            path,
+            os.path.join(outputs_dir, "astar_spline_overlay.png"),
+            samples_per_segment=20,
+            control_point_stride=3,
         )
+        print(f"Saved overlays to {outputs_dir}")
