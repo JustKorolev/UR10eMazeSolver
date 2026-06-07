@@ -3,6 +3,10 @@ import casadi as ca
 import matplotlib.pyplot as plt
 import time
 
+# Set False to send the raw MPC output to the robot without the CBF safety
+# filter overriding it (useful for isolating MPC tracking behavior).
+ENABLE_CBF = False
+
 
 def _z_nullspace_project(model, x_mod, u, workspace_z,
                          k_restore=1.0, z_deadband=0.003,
@@ -112,7 +116,11 @@ class EmbeddedSimEnvironment(object):
                     self.shared_state._workspace_z
                 )
 
-            if hasattr(self.shared_state, "cbf_filter") and self.shared_state.cbf_filter is not None:
+            if (
+                ENABLE_CBF
+                and hasattr(self.shared_state, "cbf_filter")
+                and self.shared_state.cbf_filter is not None
+            ):
                 u = self.shared_state.cbf_filter.filter(x, u_des)
             else:
                 u = u_des
