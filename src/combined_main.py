@@ -622,13 +622,15 @@ def parse_args(argv=None):
     parser.add_argument(
         "--image",
         default=DEFAULT_IMAGE_PATH,
-        help="input maze image; ignored when --capture is used",
+        help="input maze image; ignored unless --no-capture is passed",
     )
     parser.add_argument(
-        "--capture",
-        action="store_true",
-        help="capture a fresh overhead image from RealSense before localizing",
+        "--no-capture",
+        dest="capture",
+        action="store_false",
+        help="skip the RealSense capture and use --image instead",
     )
+    parser.set_defaults(capture=True)
     parser.add_argument(
         "--outdir",
         default=DEFAULT_OUTPUT_DIR,
