@@ -44,7 +44,7 @@ except ImportError:
 
 
 SAMPLING_RATE = 75  # Hz
-MPC_HORIZON = SAMPLING_RATE // 30
+MPC_HORIZON = SAMPLING_RATE // 12
 
 WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.1, np.pi, 0.01, 0.01])
 DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
@@ -52,6 +52,7 @@ DRAWING_TOOL_ORIENTATION = (np.pi, 0.01, 0.01)
 
 VJ = 0.6  # rad/s
 AJ = 3.0  # rad/s^2
+URX_STREAM_HZ = 30
 
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])
 MIN_LINK_DISTANCE = 0.05
@@ -61,7 +62,7 @@ DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "outputs")
 ENDPOINT_HEIGHT_AXIS = 2  # 0=x, 1=y, 2=z in the robot base frame.
 ENDPOINT_HEIGHT_MARGIN = 0.0
 APPROACH_HEIGHT_M = 0.1
-MOVE_TIMEOUT_S = 30.0
+MOVE_TIMEOUT_S = 40.0
 MOVE_SETTLE_S = 1.0
 APRILTAG_SIDE_M = 0.0428625
 RECTIFICATION_PPM = 1500.0
@@ -687,7 +688,7 @@ def combined_main(argv=None):
         urx_thread = URXControlThread(
             shared_state=shared_state,
             robot_ip=ROBOT_IP,
-            hz=100,
+            hz=URX_STREAM_HZ,
             vj=VJ,
             aj=AJ,
             joint_pos_limits=JOINT_POS_LIMITS,

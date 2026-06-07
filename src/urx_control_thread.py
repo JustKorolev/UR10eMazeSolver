@@ -58,7 +58,7 @@ class URXControlThread(threading.Thread):
                     modified_joint_pos = self.robot_model.DHClassicaltoModified(self.shared_state.joint_pos)
                     if np.linalg.norm(modified_joint_pos - self.shared_state.home_joints) < 1e-2:
                         self.shared_state.homing = False
-                
+
                 with self.shared_state.lock:
                     shutdown = self.shared_state.shutdown
                     enabled = self.shared_state.robot_enabled
@@ -66,7 +66,7 @@ class URXControlThread(threading.Thread):
                     u_curr = self.shared_state.u_curr.copy()
                     home_req = self.shared_state.home_requested
                     motion_req = getattr(self.shared_state, "motion_requested", False)
-                    
+
                 if shutdown:
                     self.send_zero()
                     break
@@ -133,15 +133,15 @@ class URXControlThread(threading.Thread):
                         classical_joint_angles = np.rad2deg(self.robot_model.DHModifiedToClassical(home_q))
 
                         safe = utils.SafetyCheck(self.robot_model, classical_joint_angles, T_TOOL_PEN)
-                        
+
                         print(self.robot_model.FK(classical_joint_angles))
                         # print(self.robot_model.FK(classical_joint_angles, T_TOOL_PEN))
-                        
+
                         if not safe:
                             shutdown = True
                             print("NOT SAFE, ABORTING")
                             break
-                        
+
                         print(f"[URX] Moving to home position...")
                         self.robot.movej(np.deg2rad(classical_joint_angles), vel=self.vj, acc=self.aj)
                         self.shared_state.joint_pos = self.robot.getj()
@@ -161,12 +161,12 @@ class URXControlThread(threading.Thread):
                     elif self._was_following and not following:
                         self.send_zero()
                         self._was_following = False
-                        
-                        
+
+
                 except Exception as e:
                     print(f"[URX] Command error: {e}")
                     time.sleep(0.1)
-                    
+
                 time.sleep(self.dt)
 
         except Exception as e:
@@ -234,12 +234,12 @@ class URXControlThread(threading.Thread):
         self.robot.speedj(
             joint_vels.tolist(),
             acc=self.aj,
-            min_time=0.6,
+            min_time=0.02,
         )
 
     def send_zero(self):
         if self.robot is not None:
-            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=0.4)
+            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=0.02)
 
     def stop(self):
         self.running = False
