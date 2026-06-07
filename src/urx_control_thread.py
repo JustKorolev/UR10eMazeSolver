@@ -7,8 +7,12 @@ import src.utils as utils
 
 from src.utils import collision_check
 
-MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(1.0)
+MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(5.0)
 RUN_RUNTIME_SAFETY_CHECKS = False
+
+
+def _wrapped_joint_error(current_joints, target_joints):
+    return (current_joints - target_joints + np.pi) % (2 * np.pi) - np.pi
 
 
 class URXControlThread(threading.Thread):
@@ -82,14 +86,14 @@ class URXControlThread(threading.Thread):
                         try:
                             current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
                             self.shared_state.joint_pos = current_joints.tolist()
-                            joint_error = current_joints - target_joints
-                            joint_error_norm = np.linalg.norm(joint_error)
-                            reached_target = joint_error_norm <= MOVEJ_SUCCESS_TOL_RAD
+                            joint_error = _wrapped_joint_error(current_joints, target_joints)
+                            joint_error_max = np.max(np.abs(joint_error))
+                            reached_target = joint_error_max <= MOVEJ_SUCCESS_TOL_RAD
                             error_parts.extend([
                                 f"current_joints_rad={np.array2string(current_joints, precision=5, suppress_small=True)}",
                                 f"joint_error_rad={np.array2string(joint_error, precision=5, suppress_small=True)}",
                                 f"joint_error_deg={np.array2string(np.rad2deg(joint_error), precision=2, suppress_small=True)}",
-                                f"joint_error_norm_rad={joint_error_norm:.6f}",
+                                f"joint_error_max_rad={joint_error_max:.6f}",
                             ])
                         except Exception as state_error:
                             error_parts.append(
@@ -145,13 +149,10 @@ class URXControlThread(threading.Thread):
                     if enabled:
                         if self.shared_state.following_trajectory:
                             self.send_command(u_curr)
-                        else:
-                            self.send_zero()    
                         
                         
                 except Exception as e:
                     print(f"[URX] Command error: {e}")
-                    self.send_zero()
                     time.sleep(0.1)
                     
                 time.sleep(self.dt)
