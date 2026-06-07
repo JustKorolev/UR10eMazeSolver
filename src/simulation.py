@@ -4,8 +4,10 @@ import matplotlib.pyplot as plt
 import time
 
 # Set False to send the raw MPC output to the robot without the CBF safety
-# filter overriding it (useful for isolating MPC tracking behavior).
+# filter or the Z-nullspace projection overriding it (useful for isolating MPC
+# tracking behavior).
 ENABLE_CBF = False
+ENABLE_Z_NULLSPACE = False
 
 
 def _z_nullspace_project(model, x_mod, u, workspace_z,
@@ -110,7 +112,7 @@ class EmbeddedSimEnvironment(object):
             # print(x)
             u_des, error = self.controller(x, self.ran_iterations * self.dt)
 
-            if hasattr(self.shared_state, '_workspace_z'):
+            if ENABLE_Z_NULLSPACE and hasattr(self.shared_state, '_workspace_z'):
                 u_des = _z_nullspace_project(
                     self.model, x.flatten(), u_des,
                     self.shared_state._workspace_z
