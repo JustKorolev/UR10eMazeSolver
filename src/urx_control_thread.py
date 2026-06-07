@@ -1,6 +1,5 @@
 import threading
 import time
-import inspect
 import numpy as np
 import urx
 from src.ur10e import T_TOOL_PEN, UR10e
@@ -192,27 +191,15 @@ class URXControlThread(threading.Thread):
                 print("AWOOGA NOT SAFE")
                 return
 
-        self._speedj(joint_vels.tolist(), acc=self.aj, min_time=0.4)
+        self.robot.speedj(
+            joint_vels.tolist(),
+            acc=self.aj,
+            min_time=0.4,
+        )
 
     def send_zero(self):
         if self.robot is not None:
-            self._speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=0.4)
-
-    def _speedj(self, joint_vels, acc, min_time):
-        """Call urx speedj across versions with different time-arg names."""
-        try:
-            params = inspect.signature(self.robot.speedj).parameters
-        except (TypeError, ValueError):
-            params = {}
-
-        if "min_time" in params:
-            self.robot.speedj(joint_vels, acc=acc, min_time=min_time)
-        elif "t_min" in params:
-            self.robot.speedj(joint_vels, acc=acc, t_min=min_time)
-        elif "t" in params:
-            self.robot.speedj(joint_vels, acc=acc, t=min_time)
-        else:
-            self.robot.speedj(joint_vels, acc, min_time)
+            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=0.4)
 
     def stop(self):
         self.running = False
