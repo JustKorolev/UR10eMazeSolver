@@ -10,6 +10,13 @@ from src.utils import collision_check
 RUN_RUNTIME_SAFETY_CHECKS = False
 MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(3.0)
 
+# urx 0.9.0's movej(wait=True) returns early (it exits at 80% of the start
+# distance and depends on the flaky is_program_running flag), which preempts
+# the in-flight motion. Instead we send non-blocking and poll until the robot
+# is genuinely within tolerance for a few consecutive reads.
+MOVEJ_POLL_DT = 0.02  # s between joint polls while waiting for a move
+MOVEJ_SETTLE_READS = 3  # consecutive in-tolerance reads required to call it done
+
 
 def _wrapped_joint_error(current_joints, target_joints):
     return (current_joints - target_joints + np.pi) % (2 * np.pi) - np.pi
@@ -74,9 +81,11 @@ class URXControlThread(threading.Thread):
                         self.shared_state.motion_error = None
                     try:
                         print(f"[URX] Moving to {label}...")
-                        self.robot.movej(target_joints.tolist(), vel=self.vj, acc=self.aj)
-                        self.shared_state.joint_pos = self.robot.getj()
-                        print(f"[URX] Reached {label}.")
+                        reached = self._movej_blocking(target_joints, label)
+                        if reached:
+                            print(f"[URX] Reached {label}.")
+                        else:
+                            print(f"[URX] Move '{label}' did not settle within timeout.")
                         with self.shared_state.lock:
                             self.shared_state.motion_error = None
                     except Exception as e:
@@ -175,6 +184,33 @@ class URXControlThread(threading.Thread):
                 self.shared_state.robot_connected = False
 
             print("[URX] Thread exited.")
+
+    def _movej_blocking(self, target_joints, label, timeout_s=30.0):
+        """Send a movej and block (polling getj) until the robot is actually at
+        the target, instead of trusting urx's unreliable wait.
+
+        Returns True when the robot settles within tolerance, False on timeout.
+        """
+        target = np.asarray(target_joints, dtype=float).reshape(6,)
+        self.robot.movej(target.tolist(), vel=self.vj, acc=self.aj, wait=False)
+
+        start = time.time()
+        settle = 0
+        while time.time() - start < timeout_s:
+            current = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+            self.shared_state.joint_pos = current.tolist()
+
+            err = float(np.max(np.abs(_wrapped_joint_error(current, target))))
+            if err < MOVEJ_SUCCESS_TOL_RAD:
+                settle += 1
+                if settle >= MOVEJ_SETTLE_READS:
+                    return True
+            else:
+                settle = 0
+
+            time.sleep(MOVEJ_POLL_DT)
+
+        return False
 
     def send_command(self, u):
         cmd = np.array(u).reshape(-1)
