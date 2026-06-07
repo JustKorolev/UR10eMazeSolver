@@ -656,7 +656,7 @@ if __name__ == "__main__":
             arr,
             path,
             os.path.join(outputs_dir, "astar_spline_overlay.png"),
-            samples_per_segment=45,
+            samples_per_segment=1,
             control_point_stride=3,
         )
         print(f"Saved overlays to {outputs_dir}")
