@@ -1,0 +1,8 @@
+numpy
+opencv-contrib-python
+pyrealsense2
+urx
+casadi
+PyYAML
+matplotlib
+cvxpy
