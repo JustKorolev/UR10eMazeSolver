@@ -50,8 +50,8 @@ WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.1, np.pi, 0.01, 0.01])
 DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
 DRAWING_TOOL_ORIENTATION = (np.pi, 0.01, 0.01)
 
-VJ = 0.3  # rad/s
-AJ = 1.2  # rad/s^2
+VJ = 0.6  # rad/s
+AJ = 3.0  # rad/s^2
 
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])
 MIN_LINK_DISTANCE = 0.05
