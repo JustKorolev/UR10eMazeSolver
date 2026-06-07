@@ -156,6 +156,28 @@ def inflate_obstacles(image, inflation_radius=1, free_threshold=128):
     return inflated
 
 
+def maze_wall_bbox(map_image, free_threshold=128):
+    """Bounding box (x0, y0, x1, y1) of the maze's wall structure.
+
+    The maze walls form one big dark blob (tags are masked white in the crop),
+    so the largest dark connected component's bounding box is the maze extent.
+    Returns None if no dark pixels are found.
+    """
+    import cv2
+
+    gray = _to_grayscale(map_image)
+    dark = (gray < free_threshold).astype(np.uint8) * 255
+    nlab, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    if nlab <= 1:
+        return None
+    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x0 = int(stats[best, cv2.CC_STAT_LEFT])
+    y0 = int(stats[best, cv2.CC_STAT_TOP])
+    x1 = x0 + int(stats[best, cv2.CC_STAT_WIDTH]) - 1
+    y1 = y0 + int(stats[best, cv2.CC_STAT_HEIGHT]) - 1
+    return x0, y0, x1, y1
+
+
 def create_nodes(
     N,
     map_image,
@@ -164,12 +186,18 @@ def create_nodes(
     free_fraction_threshold=0.5,
     allow_corner_cutting=False,
     obstacle_inflation_radius=4,
+    confine_to_maze=True,
 ):
     """
     Create an N x N graph of uniformly spaced pixel-space A* nodes.
 
     Bright pixels are free space and dark pixels are obstacles. A node is free
     when enough pixels in its image cell are brighter than free_threshold.
+
+    When confine_to_maze is True, nodes whose centers fall outside the maze's
+    wall bounding box are blocked. This stops A* from "solving" the maze by
+    routing through the free margin AROUND it (the entrance/exit openings
+    connect the interior to that margin), forcing a path through the maze.
     """
     if np.isscalar(map_image) and not np.isscalar(connectivity):
         # Backward compatibility for old create_nodes(N, K, map_image) calls.
@@ -184,6 +212,9 @@ def create_nodes(
         raise ValueError("connectivity must be 4 or 8")
 
     image = _to_grayscale(map_image)
+
+    bbox = maze_wall_bbox(image, free_threshold) if confine_to_maze else None
+
     image = inflate_obstacles(
         image,
         inflation_radius=obstacle_inflation_radius,
@@ -193,6 +224,8 @@ def create_nodes(
     node_grid = np.empty((N, N), dtype=object)
     nodes = []
 
+    # Small tolerance so openings right on the wall keep an interior node.
+    bmargin = 2
     for row in range(N):
         for col in range(N):
             x, y = _cell_center(row, col, N, height, width)
@@ -200,6 +233,11 @@ def create_nodes(
             node.blocked = not _cell_is_free(
                 image, row, col, N, free_threshold, free_fraction_threshold
             )
+            if bbox is not None and not node.blocked:
+                x0, y0, x1, y1 = bbox
+                if (x < x0 - bmargin or x > x1 + bmargin
+                        or y < y0 - bmargin or y > y1 + bmargin):
+                    node.blocked = True  # exterior margin -> not traversable
             node_grid[row, col] = node
             nodes.append(node)
 
@@ -574,24 +612,11 @@ if __name__ == "__main__":
     if not free_nodes:
         raise RuntimeError("No free cells found in the maze map; check thresholds.")
 
-    # Block the exterior margin so A* can't shortcut AROUND the maze through the
-    # free border: confine planning to the maze's wall bounding box. The walls
-    # form one big dark blob (tags are masked white), so its bbox is the maze.
-    dark = (arr < 128).astype(np.uint8) * 255
-    nlab, _, mstats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
-    if nlab > 1:
-        mi = 1 + int(np.argmax(mstats[1:, cv2.CC_STAT_AREA]))
-        mx0 = mstats[mi, cv2.CC_STAT_LEFT]
-        my0 = mstats[mi, cv2.CC_STAT_TOP]
-        mx1 = mx0 + mstats[mi, cv2.CC_STAT_WIDTH] - 1
-        my1 = my0 + mstats[mi, cv2.CC_STAT_HEIGHT] - 1
-        margin = 2
-        for n in nodes:
-            if n.x < mx0 - margin or n.x > mx1 + margin or n.y < my0 - margin or n.y > my1 + margin:
-                n.blocked = True
-        print(f"Maze wall bbox: x[{mx0},{mx1}] y[{my0},{my1}] (margin nodes blocked)")
-
-    # Restrict planning to the maze interior (largest connected free region).
+    # create_nodes already confines planning to the maze (blocks the exterior
+    # margin); restrict further to the largest connected free region (interior).
+    bbox = maze_wall_bbox(arr)
+    if bbox is not None:
+        print(f"Maze wall bbox: x[{bbox[0]},{bbox[2]}] y[{bbox[1]},{bbox[3]}]")
     interior = largest_free_component(nodes)
     print(f"Free nodes: {len(free_nodes)}; maze interior component: {len(interior)}")
 
