@@ -131,7 +131,7 @@ class SharedTrajectoryState:
 
         self.robot_model = UR10e(workspace_offset=workspace_offset)
         self._collision_robot = self.robot_model
-        self.home_joints = self.robot_model.IK("elbow_up_1", workspace_offset)
+        self.home_joints = self.robot_model.IK("elbow_up_2", workspace_offset)
         self._workspace_z = float(workspace_offset[2, 3])
         self._workspace_endpoint_min = float(workspace_offset[ENDPOINT_HEIGHT_AXIS, 3])
         from src.cbf import CBFSafetyFilter, EndpointHeightCBF
@@ -193,9 +193,13 @@ class SharedTrajectoryState:
         while True:
             with self.lock:
                 done = self.motion_done
+                error = self.motion_error
                 label = self.motion_label
 
             if done:
+                if error:
+                    print(f"[WARN] Robot move '{label}' verification failed: {error}")
+                    return False
                 return True
 
             if time.time() - start > timeout_s:
@@ -433,7 +437,7 @@ def world_points_to_joint_trajectory(
     world_xyz_points,
     robot=None,
     orientation_rotvec=DRAWING_TOOL_ORIENTATION,
-    ik_solution="elbow_up_1",
+    ik_solution="elbow_up_2",
     Ttp_pen=T_TOOL_PEN,
 ):
     """Convert world XYZ waypoints to a joint trajectory using UR10e IK."""
@@ -523,6 +527,7 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     T_base_maze = compose_base_maze_transform(T_world_maze)
     maze_w_m = float(meta["maze_w_m"])
     maze_h_m = float(meta["maze_h_m"])
+    print_transform_calibration_summary(T_world_maze, T_base_maze, maze_w_m, maze_h_m)
 
     spline_pixels = plan_maze_opening_path(maze_image, output_dir)
     local_xy = pixel_points_to_maze_lengths(
@@ -599,6 +604,48 @@ def print_maze_endpoint_summary(base_xyz, local_xy, spline_pixels):
     print(f"  maze local xy:   [{end_local[0]:+.4f}, {end_local[1]:+.4f}] m")
     print(f"  robot base xyz:  [{end_base[0]:+.4f}, {end_base[1]:+.4f}, {end_base[2]:+.4f}] m")
     print(f"  robot base xyz:  [{end_base[0]/0.0254:+.2f}, {end_base[1]/0.0254:+.2f}, {end_base[2]/0.0254:+.2f}] in")
+    print("=" * 70 + "\n")
+
+
+def transform_points(T, points_xy):
+    pts = np.asarray(points_xy, dtype=float)
+    homog = np.column_stack((pts, np.zeros(len(pts)), np.ones(len(pts))))
+    return (np.asarray(T, dtype=float).reshape(4, 4) @ homog.T).T[:, :3]
+
+
+def print_transform_calibration_summary(T_world_maze, T_base_maze, maze_w_m, maze_h_m):
+    corners_local = np.array(
+        [
+            [0.0, 0.0],
+            [maze_w_m, 0.0],
+            [0.0, maze_h_m],
+            [maze_w_m, maze_h_m],
+        ],
+        dtype=float,
+    )
+    corners_base = transform_points(T_base_maze, corners_local)
+    labels = ["top-left origin", "top-right +x", "bottom-left +y", "bottom-right"]
+
+    print("\n" + "=" * 70)
+    print("TRANSFORM CALIBRATION SUMMARY")
+    print("=" * 70)
+    print(f"USE_MANUAL_TAG_TO_MAZE: {USE_MANUAL_TAG_TO_MAZE}")
+    print(f"MAZE_X_AXIS_POINTS_NEGATIVE_BASE_X: {MAZE_X_AXIS_POINTS_NEGATIVE_BASE_X}")
+    print(f"ANCHOR_TAG_ID: {ANCHOR_TAG_ID}")
+    print(f"maze size: {maze_w_m:.4f} x {maze_h_m:.4f} m "
+          f"({maze_w_m/0.0254:.2f} x {maze_h_m/0.0254:.2f} in)")
+    print("T_BASE_TAG:")
+    print(np.array2string(T_BASE_TAG, precision=4, suppress_small=True))
+    print("T_TAG_MAZE_CORRECTION:")
+    print(np.array2string(T_TAG_MAZE_CORRECTION, precision=4, suppress_small=True))
+    print("T_world_maze from localizer:")
+    print(np.array2string(T_world_maze, precision=4, suppress_small=True))
+    print("T_base_maze used for path:")
+    print(np.array2string(T_base_maze, precision=4, suppress_small=True))
+    print("Maze corners in robot base frame:")
+    for label, point in zip(labels, corners_base):
+        print(f"  {label:16s}: [{point[0]:+.4f}, {point[1]:+.4f}, {point[2]:+.4f}] m "
+              f"= [{point[0]/0.0254:+.2f}, {point[1]/0.0254:+.2f}, {point[2]/0.0254:+.2f}] in")
     print("=" * 70 + "\n")
 
 

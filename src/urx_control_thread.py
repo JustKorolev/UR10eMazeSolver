@@ -8,6 +8,11 @@ import src.utils as utils
 from src.utils import collision_check
 
 RUN_RUNTIME_SAFETY_CHECKS = False
+MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(3.0)
+
+
+def _wrapped_joint_error(current_joints, target_joints):
+    return (current_joints - target_joints + np.pi) % (2 * np.pi) - np.pi
 
 
 class URXControlThread(threading.Thread):
@@ -84,7 +89,28 @@ class URXControlThread(threading.Thread):
                         with self.shared_state.lock:
                             self.shared_state.motion_error = None
                     finally:
+                        motion_error = None
+                        try:
+                            current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+                            self.shared_state.joint_pos = current_joints.tolist()
+                            joint_error = _wrapped_joint_error(current_joints, target_joints)
+                            joint_error_max = float(np.max(np.abs(joint_error)))
+                            if joint_error_max > MOVEJ_SUCCESS_TOL_RAD:
+                                motion_error = (
+                                    f"not at requested joint target after '{label}': "
+                                    f"max_error={np.rad2deg(joint_error_max):.2f} deg, "
+                                    f"error_deg={np.array2string(np.rad2deg(joint_error), precision=2, suppress_small=True)}"
+                                )
+                                print(f"[WARN] {motion_error}")
+                        except Exception as state_error:
+                            motion_error = (
+                                f"could not verify requested joint target after '{label}': "
+                                f"{type(state_error).__name__}: {state_error!r}"
+                            )
+                            print(f"[WARN] {motion_error}")
+
                         with self.shared_state.lock:
+                            self.shared_state.motion_error = motion_error
                             self.shared_state.motion_in_progress = False
                             self.shared_state.motion_done = True
                             self.shared_state.robot_enabled = False

@@ -213,7 +213,7 @@ class UR10e():
         :rtype: np.ndarray
         """
         T = self.workspace_offset
-        x0 = self.IK("elbow_up_1", T)
+        x0 = self.IK("elbow_up_2", T)
         print(x0)
         return x0
 
