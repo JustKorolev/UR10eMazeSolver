@@ -20,11 +20,6 @@ import time
 from collections import deque
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
-    sys.path.insert(0, VENDOR_DIR)
 
 import cv2
 import numpy as np
@@ -49,7 +44,7 @@ except ImportError:
 
 
 SAMPLING_RATE = 75  # Hz
-MPC_HORIZON = SAMPLING_RATE // 12
+MPC_HORIZON = SAMPLING_RATE // 30
 
 WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.1, np.pi, 0.01, 0.01])
 DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
@@ -73,7 +68,7 @@ RECTIFICATION_PPM = 1500.0
 ANCHOR_TAG_ID = 8
 
 # Physical choreography and calibration constants.
-CAMERA_JOINTS = np.deg2rad([90.0, -93.0, 103.0, -99.0, -90.0, 0.0])
+CAMERA_JOINTS = np.deg2rad([-68.0, -104.0, -87.0, -91.0, 90.5, 199.0])
 
 # If maze_localizer anchors its "world" frame to a tag, set this to that tag's
 # pose in the UR base frame. p_base = T_BASE_TAG @ p_tag.
@@ -198,13 +193,11 @@ class SharedTrajectoryState:
 
             if done:
                 if error:
-                    print(f"[WARN] Robot move '{label}' verification failed: {error}")
-                    return False
-                return True
+                    raise RuntimeError(f"Robot move '{label}' failed: {error}")
+                return
 
             if time.time() - start > timeout_s:
-                print(f"[WARN] Timed out waiting for robot move '{label}'; continuing")
-                return False
+                raise TimeoutError(f"Timed out waiting for robot move '{label}'")
 
             time.sleep(0.05)
 
@@ -227,7 +220,6 @@ class SharedTrajectoryState:
             else:
                 self.following_trajectory = False
                 self.robot_enabled = False
-                self.u_curr = np.zeros((6, 1))
 
     def hard_stop(self, reason):
         with self.lock:
@@ -494,11 +486,6 @@ def run_maze_localizer(image_path, output_dir):
     if ANCHOR_TAG_ID is not None:
         cmd.extend(["--anchor", str(ANCHOR_TAG_ID)])
     print("[LOCALIZE] Running maze_localizer.py")
-    env = os.environ.copy()
-    if os.path.isdir(VENDOR_DIR):
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = VENDOR_DIR if not existing else VENDOR_DIR + os.pathsep + existing
-    subprocess.run(cmd, check=True, env=env)
 
     artifacts = {
         "maze_image": os.path.join(output_dir, "maze_rectified.png"),
@@ -527,7 +514,6 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     T_base_maze = compose_base_maze_transform(T_world_maze)
     maze_w_m = float(meta["maze_w_m"])
     maze_h_m = float(meta["maze_h_m"])
-    print_transform_calibration_summary(T_world_maze, T_base_maze, maze_w_m, maze_h_m)
 
     spline_pixels = plan_maze_opening_path(maze_image, output_dir)
     local_xy = pixel_points_to_maze_lengths(
@@ -538,7 +524,6 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     )
     base_xy = local_maze_to_world(local_xy, T_base_maze)
     base_xyz = add_drawing_plane_z(base_xy)
-    print_maze_endpoint_summary(base_xyz, local_xy, spline_pixels)
     joint_trajectory = world_points_to_joint_trajectory(base_xyz, robot=robot)
 
     start_contact_xyz = base_xyz[0].copy()
@@ -577,76 +562,6 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
         "start_approach_joints": start_approach_joints,
         "start_contact_joints": start_contact_joints,
     }
-
-
-def print_maze_endpoint_summary(base_xyz, local_xy, spline_pixels):
-    base_xyz = np.asarray(base_xyz, dtype=float)
-    local_xy = np.asarray(local_xy, dtype=float)
-    spline_pixels = np.asarray(spline_pixels, dtype=float)
-
-    start_base = base_xyz[0]
-    end_base = base_xyz[-1]
-    start_local = local_xy[0]
-    end_local = local_xy[-1]
-    start_px = spline_pixels[0]
-    end_px = spline_pixels[-1]
-
-    print("\n" + "=" * 70)
-    print("MAZE START/END WAYPOINTS")
-    print("=" * 70)
-    print("Start:")
-    print(f"  pixel xy:        [{start_px[0]:.1f}, {start_px[1]:.1f}] px")
-    print(f"  maze local xy:   [{start_local[0]:+.4f}, {start_local[1]:+.4f}] m")
-    print(f"  robot base xyz:  [{start_base[0]:+.4f}, {start_base[1]:+.4f}, {start_base[2]:+.4f}] m")
-    print(f"  robot base xyz:  [{start_base[0]/0.0254:+.2f}, {start_base[1]/0.0254:+.2f}, {start_base[2]/0.0254:+.2f}] in")
-    print("End:")
-    print(f"  pixel xy:        [{end_px[0]:.1f}, {end_px[1]:.1f}] px")
-    print(f"  maze local xy:   [{end_local[0]:+.4f}, {end_local[1]:+.4f}] m")
-    print(f"  robot base xyz:  [{end_base[0]:+.4f}, {end_base[1]:+.4f}, {end_base[2]:+.4f}] m")
-    print(f"  robot base xyz:  [{end_base[0]/0.0254:+.2f}, {end_base[1]/0.0254:+.2f}, {end_base[2]/0.0254:+.2f}] in")
-    print("=" * 70 + "\n")
-
-
-def transform_points(T, points_xy):
-    pts = np.asarray(points_xy, dtype=float)
-    homog = np.column_stack((pts, np.zeros(len(pts)), np.ones(len(pts))))
-    return (np.asarray(T, dtype=float).reshape(4, 4) @ homog.T).T[:, :3]
-
-
-def print_transform_calibration_summary(T_world_maze, T_base_maze, maze_w_m, maze_h_m):
-    corners_local = np.array(
-        [
-            [0.0, 0.0],
-            [maze_w_m, 0.0],
-            [0.0, maze_h_m],
-            [maze_w_m, maze_h_m],
-        ],
-        dtype=float,
-    )
-    corners_base = transform_points(T_base_maze, corners_local)
-    labels = ["top-left origin", "top-right +x", "bottom-left +y", "bottom-right"]
-
-    print("\n" + "=" * 70)
-    print("TRANSFORM CALIBRATION SUMMARY")
-    print("=" * 70)
-    print(f"USE_MANUAL_TAG_TO_MAZE: {USE_MANUAL_TAG_TO_MAZE}")
-    print(f"MAZE_X_AXIS_POINTS_NEGATIVE_BASE_X: {MAZE_X_AXIS_POINTS_NEGATIVE_BASE_X}")
-    print(f"ANCHOR_TAG_ID: {ANCHOR_TAG_ID}")
-    print(f"maze size: {maze_w_m:.4f} x {maze_h_m:.4f} m "
-          f"({maze_w_m/0.0254:.2f} x {maze_h_m/0.0254:.2f} in)")
-    print("T_BASE_TAG:")
-    print(np.array2string(T_BASE_TAG, precision=4, suppress_small=True))
-    print("T_TAG_MAZE_CORRECTION:")
-    print(np.array2string(T_TAG_MAZE_CORRECTION, precision=4, suppress_small=True))
-    print("T_world_maze from localizer:")
-    print(np.array2string(T_world_maze, precision=4, suppress_small=True))
-    print("T_base_maze used for path:")
-    print(np.array2string(T_base_maze, precision=4, suppress_small=True))
-    print("Maze corners in robot base frame:")
-    for label, point in zip(labels, corners_base):
-        print(f"  {label:16s}: [{point[0]:+.4f}, {point[1]:+.4f}, {point[2]:+.4f}] m "
-              f"= [{point[0]/0.0254:+.2f}, {point[1]/0.0254:+.2f}, {point[2]/0.0254:+.2f}] in")
-    print("=" * 70 + "\n")
 
 
 def run_mpc_background(shared_state, mpc_horizon, status_callback=None):
@@ -747,16 +662,10 @@ def modified_to_classical_joints(robot, q_modified):
     return robot.DHModifiedToClassical(np.asarray(q_modified, dtype=float).reshape(6,))
 
 
-def request_and_wait_move(
-    shared_state,
-    classical_joints,
-    label,
-    timeout_s=MOVE_TIMEOUT_S,
-):
+def request_and_wait_move(shared_state, classical_joints, label, timeout_s=MOVE_TIMEOUT_S):
     shared_state.request_joint_move(classical_joints, label=label)
-    ok = shared_state.wait_for_motion(timeout_s=timeout_s)
+    shared_state.wait_for_motion(timeout_s=timeout_s)
     time.sleep(MOVE_SETTLE_S)
-    return ok
 
 
 def combined_main(argv=None):
@@ -835,7 +744,10 @@ def combined_main(argv=None):
         shared_state.stop_following()
     finally:
         if shared_state is not None and urx_thread is not None:
-            request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
+            try:
+                request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
+            except Exception as e:
+                print(f"[WARN] Could not return to camera pose: {e}")
             with shared_state.lock:
                 shared_state.shutdown = True
             urx_thread.stop()
