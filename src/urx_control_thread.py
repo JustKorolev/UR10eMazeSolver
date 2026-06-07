@@ -73,9 +73,28 @@ class URXControlThread(threading.Thread):
                         with self.shared_state.lock:
                             self.shared_state.motion_error = None
                     except Exception as e:
-                        print(f"[URX] Move '{label}' error: {e}")
+                        error_parts = [
+                            f"{type(e).__name__}: {e!r}",
+                            f"target_joints_rad={np.array2string(target_joints, precision=5, suppress_small=True)}",
+                        ]
+                        try:
+                            current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+                            self.shared_state.joint_pos = current_joints.tolist()
+                            joint_error = current_joints - target_joints
+                            error_parts.extend([
+                                f"current_joints_rad={np.array2string(current_joints, precision=5, suppress_small=True)}",
+                                f"joint_error_rad={np.array2string(joint_error, precision=5, suppress_small=True)}",
+                                f"joint_error_deg={np.array2string(np.rad2deg(joint_error), precision=2, suppress_small=True)}",
+                                f"joint_error_norm_rad={np.linalg.norm(joint_error):.6f}",
+                            ])
+                        except Exception as state_error:
+                            error_parts.append(
+                                f"state_read_error={type(state_error).__name__}: {state_error!r}"
+                            )
+                        detailed_error = " | ".join(error_parts)
+                        print(f"[URX] Move '{label}' error: {detailed_error}")
                         with self.shared_state.lock:
-                            self.shared_state.motion_error = str(e)
+                            self.shared_state.motion_error = detailed_error
                     finally:
                         with self.shared_state.lock:
                             self.shared_state.motion_in_progress = False
