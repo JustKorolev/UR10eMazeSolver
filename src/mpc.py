@@ -388,4 +388,14 @@ class MPC(object):
         """
         self.x_sp = x_sp
 
-        self.u_sp = np.zeros(self.Nu*self.Nt)
+        # Velocity feedforward: drive the nominal command along the reference at
+        # the reference's own joint velocity, u_ff[k] = (q_ref[k+1] - q_ref[k]) / dt.
+        # Differences are wrapped to the shortest angle so that ~2*pi IK wraparound
+        # jumps in the trajectory do not produce huge feedforward spikes.
+        u_sp = np.zeros(self.Nu * self.Nt)
+        for i in range(self.Nt):
+            q_k = x_sp[self.Nx * i: self.Nx * i + 6]
+            q_k1 = x_sp[self.Nx * (i + 1): self.Nx * (i + 1) + 6]
+            dq = np.asarray(wrap_joints_np(q_k1 - q_k), dtype=float).reshape(-1)
+            u_sp[self.Nu * i: self.Nu * i + 6] = dq / self.dt
+        self.u_sp = u_sp
