@@ -18,6 +18,7 @@ from collections import deque
 import numpy as np
 
 from src.astar import astar, build_spline, create_nodes
+from src.cbf import CBFSafetyFilter, JointLimitCBF
 from src.trajectory_tracking import MPCSimulationThread
 from src.ur10e import UR10e
 from src.utils import pixel_points_to_lengths, pose6_to_T
@@ -70,6 +71,18 @@ class SharedTrajectoryState:
         self._collision_robot = self.robot_model
         self.home_joints = self.robot_model.IK("elbow_up_2", workspace_offset)
         self._workspace_z = float(workspace_offset[2, 3])
+        self.cbf_filter = CBFSafetyFilter(
+            constraints=[
+                JointLimitCBF(
+                    q_min=-JOINT_POS_LIMITS,
+                    q_max=JOINT_POS_LIMITS,
+                    margin=0.05,
+                )
+            ],
+            alpha=5.0,
+            u_min=-np.full(6, VJ),
+            u_max=np.full(6, VJ),
+        )
 
     @property
     def trajectory_window(self):

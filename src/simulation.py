@@ -104,13 +104,18 @@ class EmbeddedSimEnvironment(object):
             # x = x_vec[:, -1].reshape((self.model.n, 1)) # TODO: REMOVE THIS FOR ACTUAL ROBOT
             # print("predicted_state")
             # print(x)
-            u, error = self.controller(x, self.ran_iterations * self.dt)
+            u_des, error = self.controller(x, self.ran_iterations * self.dt)
 
             if hasattr(self.shared_state, '_workspace_z'):
-                u = _z_nullspace_project(
-                    self.model, x.flatten(), u,
+                u_des = _z_nullspace_project(
+                    self.model, x.flatten(), u_des,
                     self.shared_state._workspace_z
                 )
+
+            if hasattr(self.shared_state, "cbf_filter") and self.shared_state.cbf_filter is not None:
+                u = self.shared_state.cbf_filter.filter(x, u_des)
+            else:
+                u = u_des
 
             x_next = self.dynamics(x, u)
 
