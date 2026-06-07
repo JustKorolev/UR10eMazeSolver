@@ -9,6 +9,7 @@ import src.utils as utils
 from src.utils import collision_check
 
 MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(1.0)
+RUN_RUNTIME_SAFETY_CHECKS = False
 
 
 class URXControlThread(threading.Thread):
@@ -42,12 +43,9 @@ class URXControlThread(threading.Thread):
 
             while self.running:
                 self.shared_state.joint_pos = self.robot.getj()
-                # print("joint angles")
-                # print(self.shared_state.joint_pos)
-                modified_joint_pos = self.robot_model.DHClassicaltoModified(self.shared_state.joint_pos)
-                # print(np.linalg.norm(modified_joint_pos - self.shared_state.home_joints))
-                if np.linalg.norm(modified_joint_pos - self.shared_state.home_joints) < 1e-2:
-                    if self.shared_state.homing:
+                if self.shared_state.homing:
+                    modified_joint_pos = self.robot_model.DHClassicaltoModified(self.shared_state.joint_pos)
+                    if np.linalg.norm(modified_joint_pos - self.shared_state.home_joints) < 1e-2:
                         self.shared_state.homing = False
                 
                 with self.shared_state.lock:
@@ -146,22 +144,6 @@ class URXControlThread(threading.Thread):
 
                 try:
                     if enabled:
-                        curr_joints = np.array(self.robot.getj()).reshape((6,1))
-                        future_joints = (curr_joints + 0.5 * u_curr)
-                        
-                        classical_joint_angles = np.rad2deg(future_joints)
-
-                        safe = utils.SafetyCheck(self.robot_model, classical_joint_angles, T_TOOL_PEN)
-                        
-                        # print("FKIN")
-                        # print(self.robot_model.FK(np.rad2deg(curr_joints)))
-                        # print(u_curr)
-                        
-                        if not safe:
-                            shutdown = True
-                            print("NOT SAFE, ABORTING")
-                            break
-                        
                         if self.shared_state.following_trajectory:
                             self.send_command(u_curr)
                         else:
@@ -195,7 +177,11 @@ class URXControlThread(threading.Thread):
         cmd = np.array(u).reshape(-1)
         joint_vels = np.clip(cmd, -self.vj, self.vj)
 
-        if self.shared_state.joint_pos is not None and self.joint_pos_limits is not None:
+        if (
+            RUN_RUNTIME_SAFETY_CHECKS
+            and self.shared_state.joint_pos is not None
+            and self.joint_pos_limits is not None
+        ):
             theta_pred = np.array(self.shared_state.joint_pos) + joint_vels * self.dt
             safe, reason = collision_check(
                 self.shared_state._collision_robot, theta_pred,

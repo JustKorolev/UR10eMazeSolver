@@ -8,7 +8,16 @@ from src.simulation import EmbeddedSimEnvironment
 
 
 class MPCSimulationThread(threading.Thread):
-    def __init__(self, shared_state, mpc_horizon=1, dt=0.01, vj=0.5, aj=1, workspace_offset=np.eye(4,4)):
+    def __init__(
+        self,
+        shared_state,
+        mpc_horizon=1,
+        dt=0.01,
+        vj=0.5,
+        aj=1,
+        workspace_offset=np.eye(4,4),
+        enable_plots=False,
+    ):
         super().__init__(daemon=True)
         self.mpc_horizon = mpc_horizon
         self.results = {'t': None, 'y': None, 'u': None}
@@ -19,6 +28,7 @@ class MPCSimulationThread(threading.Thread):
         self.vj = vj
         self.aj = aj
         self.workspace_offset = workspace_offset
+        self.enable_plots = bool(enable_plots)
 
     def run(self):
         try:
@@ -52,10 +62,11 @@ class MPCSimulationThread(threading.Thread):
 
             self.results = {'t': t, 'y': y, 'u': u, 'env': sim_env_tracking}
             self.status = "completed"
-            graph_number = np.random.randint(1, 1000)
-            sim_env_tracking.visualize(graph_number)
-            sim_env_tracking.visualize_error(graph_number)
-            sim_env_tracking.visualize_end_effector(graph_number)
+            if self.enable_plots:
+                graph_number = np.random.randint(1, 1000)
+                sim_env_tracking.visualize(graph_number)
+                sim_env_tracking.visualize_error(graph_number)
+                sim_env_tracking.visualize_end_effector(graph_number)
             print("[MPC Thread] Simulation completed successfully!")
 
         except Exception as e:

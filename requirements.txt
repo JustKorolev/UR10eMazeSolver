@@ -1,7 +1,7 @@
 numpy
 opencv-contrib-python
 pyrealsense2
-urx
+urx==0.11.0
 casadi
 PyYAML
 matplotlib
