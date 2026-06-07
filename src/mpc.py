@@ -388,13 +388,4 @@ class MPC(object):
         """
         self.x_sp = x_sp
 
-        u_sp = np.zeros(self.Nu*self.Nt)
-        for i in range(self.Nt):
-            param = ca.vertcat(x_sp[self.Nx*i:self.Nx*(i+1)],
-                            x_sp[self.Nx*(i+1):self.Nx*(i+2)])
-            sol = self.u_ref_solver(x0=np.zeros(self.Nu), p=param)
-            u_ref_i = np.array(sol['x']).reshape(-1, 1)
-            u_sp[self.Nu*i:self.Nu*(i+1)] = u_ref_i.flatten()
-
-        u_sp = np.zeros(self.Nu*self.Nt)
-        self.u_sp = u_sp
+        self.u_sp = np.zeros(self.Nu*self.Nt)
