@@ -486,6 +486,7 @@ def run_maze_localizer(image_path, output_dir):
     if ANCHOR_TAG_ID is not None:
         cmd.extend(["--anchor", str(ANCHOR_TAG_ID)])
     print("[LOCALIZE] Running maze_localizer.py")
+    subprocess.run(cmd, check=True)
 
     artifacts = {
         "maze_image": os.path.join(output_dir, "maze_rectified.png"),
