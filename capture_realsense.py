@@ -1,47 +1,49 @@
-"""Capture a single color image from an Intel RealSense camera (e.g. D435I) and save it.
+"""Capture a single color (and depth) image from any Intel RealSense camera.
+
+Device-agnostic: it scans for the connected RealSense (any model / OS / USB
+port), selects the best supported color profile, warms up auto-exposure, and
+saves the shot. Works the same on Windows and Ubuntu.
 
 Usage:
     python capture_realsense.py [output_path]
+    python capture_realsense.py myphoto.png --serial 1234567890
+    python capture_realsense.py shot.png --width 1920 --height 1080 --no-depth
 
 Defaults to a timestamped PNG in the current directory if no path is given.
-The script also saves the aligned depth frame as a colorized PNG alongside the
-color image (skipped automatically if depth is unavailable).
 """
 
+import argparse
 import os
-import sys
-import time
 from datetime import datetime
 
-import numpy as np
 import cv2
-import pyrealsense2 as rs
+import numpy as np
 
-# Stream config. The D435I color sensor supports 1280x720 @ 30fps.
-COLOR_W, COLOR_H, FPS = 1280, 720, 30
-WARMUP_FRAMES = 30  # let auto-exposure settle before grabbing the shot
+import realsense_utils as rsu
 
 
 def main():
-    if len(sys.argv) > 1:
-        out_path = sys.argv[1]
-    else:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(os.getcwd(), f"realsense_{stamp}.png")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", nargs="?", default=None, help="output image path")
+    parser.add_argument("--serial", default=None, help="select camera by serial number")
+    parser.add_argument("--width", type=int, default=rsu.PREFERRED_COLOR[0])
+    parser.add_argument("--height", type=int, default=rsu.PREFERRED_COLOR[1])
+    parser.add_argument("--fps", type=int, default=rsu.PREFERRED_COLOR[2])
+    parser.add_argument("--warmup", type=int, default=rsu.WARMUP_FRAMES,
+                        help="frames to discard so auto-exposure can settle")
+    parser.add_argument("--no-depth", dest="depth", action="store_false",
+                        help="do not capture/save the depth frame")
+    args = parser.parse_args()
 
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, COLOR_W, COLOR_H, rs.format.bgr8, FPS)
-    config.enable_stream(rs.stream.depth, COLOR_W, COLOR_H, rs.format.z16, FPS)
+    out_path = args.output or os.path.join(
+        os.getcwd(), f"realsense_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
 
     print("Starting RealSense pipeline...")
-    profile = pipeline.start(config)
-
+    pipeline, _, info = rsu.start_pipeline(
+        serial=args.serial, want_depth=args.depth,
+        preferred_color=(args.width, args.height, args.fps), warmup=args.warmup,
+    )
     try:
-        # Warm up so auto-exposure/white-balance can converge.
-        for _ in range(WARMUP_FRAMES):
-            pipeline.wait_for_frames()
-
         frames = pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
         if not color_frame:
@@ -51,16 +53,17 @@ def main():
         cv2.imwrite(out_path, color_image)
         print(f"Saved color image to: {out_path}")
 
-        depth_frame = frames.get_depth_frame()
-        if depth_frame:
-            depth_image = np.asanyarray(depth_frame.get_data())
-            depth_colored = cv2.applyColorMap(
-                cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET
-            )
-            root, ext = os.path.splitext(out_path)
-            depth_path = f"{root}_depth{ext}"
-            cv2.imwrite(depth_path, depth_colored)
-            print(f"Saved colorized depth to: {depth_path}")
+        if args.depth:
+            depth_frame = frames.get_depth_frame()
+            if depth_frame:
+                depth_image = np.asanyarray(depth_frame.get_data())
+                depth_colored = cv2.applyColorMap(
+                    cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET
+                )
+                root, ext = os.path.splitext(out_path)
+                depth_path = f"{root}_depth{ext}"
+                cv2.imwrite(depth_path, depth_colored)
+                print(f"Saved colorized depth to: {depth_path}")
     finally:
         pipeline.stop()
         print("Pipeline stopped.")
