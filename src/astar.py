@@ -262,7 +262,7 @@ def _edge_openings(profile, valid, expect_high, min_len=6, dev=8):
     """
     t = np.array([i for i in range(len(profile)) if valid[i]])
     if len(t) < 10:
-        return []
+        return [], (0.0, 0.0)
     p = np.array([profile[i] for i in t], float)
     a, b = _robust_line_fit(t, p)
     line = a * t + b
@@ -278,7 +278,7 @@ def _edge_openings(profile, valid, expect_high, min_len=6, dev=8):
                 seg = t[start:i]
                 runs.append((int(seg.min()), int(seg.max())))
             start = None
-    return runs
+    return runs, (float(a), float(b))
 
 
 def detect_openings(map_image, free_threshold=128):
@@ -293,16 +293,6 @@ def detect_openings(map_image, free_threshold=128):
     dark = image < free_threshold
     h, w = dark.shape
 
-    # Outer wall rectangle: the long border lines (rows/cols that are mostly wall).
-    row_dark = dark.sum(axis=1)
-    col_dark = dark.sum(axis=0)
-    rows_hit = np.where(row_dark > 0.45 * w)[0]
-    cols_hit = np.where(col_dark > 0.45 * h)[0]
-    y0 = int(rows_hit.min()) if len(rows_hit) else 0
-    y1 = int(rows_hit.max()) if len(rows_hit) else h - 1
-    x0 = int(cols_hit.min()) if len(cols_hit) else 0
-    x1 = int(cols_hit.max()) if len(cols_hit) else w - 1
-
     rightmost = [int(np.where(dark[y])[0].max()) if dark[y].any() else -1 for y in range(h)]
     leftmost = [int(np.where(dark[y])[0].min()) if dark[y].any() else 10**9 for y in range(h)]
     bottommost = [int(np.where(dark[:, x])[0].max()) if dark[:, x].any() else -1 for x in range(w)]
@@ -310,15 +300,26 @@ def detect_openings(map_image, free_threshold=128):
     valid_rows = [bool(dark[y].any()) for y in range(h)]
     valid_cols = [bool(dark[:, x].any()) for x in range(w)]
 
+    # Each opening is anchored on the (possibly tilted) outer wall, evaluated
+    # from that edge's robust line fit at the gap center -> tilt-invariant and
+    # always on the true boundary (not the first interior wall past the gap).
     points = []
-    for a, b in _edge_openings(rightmost, valid_rows, expect_high=True):
-        points.append((x1, (a + b) // 2))       # right edge -> outer right wall
-    for a, b in _edge_openings(leftmost, valid_rows, expect_high=False):
-        points.append((x0, (a + b) // 2))        # left edge -> outer left wall
-    for a, b in _edge_openings(bottommost, valid_cols, expect_high=True):
-        points.append(((a + b) // 2, y1))        # bottom edge -> outer bottom wall
-    for a, b in _edge_openings(topmost, valid_cols, expect_high=False):
-        points.append(((a + b) // 2, y0))        # top edge -> outer top wall
+    runs, (a, b) = _edge_openings(rightmost, valid_rows, expect_high=True)
+    for s, e in runs:
+        yc = (s + e) // 2
+        points.append((int(round(a * yc + b)), yc))
+    runs, (a, b) = _edge_openings(leftmost, valid_rows, expect_high=False)
+    for s, e in runs:
+        yc = (s + e) // 2
+        points.append((int(round(a * yc + b)), yc))
+    runs, (a, b) = _edge_openings(bottommost, valid_cols, expect_high=True)
+    for s, e in runs:
+        xc = (s + e) // 2
+        points.append((xc, int(round(a * xc + b))))
+    runs, (a, b) = _edge_openings(topmost, valid_cols, expect_high=False)
+    for s, e in runs:
+        xc = (s + e) // 2
+        points.append((xc, int(round(a * xc + b))))
     return points
 
 
@@ -572,6 +573,23 @@ if __name__ == "__main__":
     free_nodes = [node for node in nodes if not node.blocked]
     if not free_nodes:
         raise RuntimeError("No free cells found in the maze map; check thresholds.")
+
+    # Block the exterior margin so A* can't shortcut AROUND the maze through the
+    # free border: confine planning to the maze's wall bounding box. The walls
+    # form one big dark blob (tags are masked white), so its bbox is the maze.
+    dark = (arr < 128).astype(np.uint8) * 255
+    nlab, _, mstats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    if nlab > 1:
+        mi = 1 + int(np.argmax(mstats[1:, cv2.CC_STAT_AREA]))
+        mx0 = mstats[mi, cv2.CC_STAT_LEFT]
+        my0 = mstats[mi, cv2.CC_STAT_TOP]
+        mx1 = mx0 + mstats[mi, cv2.CC_STAT_WIDTH] - 1
+        my1 = my0 + mstats[mi, cv2.CC_STAT_HEIGHT] - 1
+        margin = 2
+        for n in nodes:
+            if n.x < mx0 - margin or n.x > mx1 + margin or n.y < my0 - margin or n.y > my1 + margin:
+                n.blocked = True
+        print(f"Maze wall bbox: x[{mx0},{mx1}] y[{my0},{my1}] (margin nodes blocked)")
 
     # Restrict planning to the maze interior (largest connected free region).
     interior = largest_free_component(nodes)

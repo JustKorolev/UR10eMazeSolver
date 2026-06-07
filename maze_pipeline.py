@@ -28,11 +28,15 @@ ARUCO_DICT_ID = cv2.aruco.DICT_APRILTAG_36h11
 
 
 def make_detector_params():
-    """Detector parameters tuned to recover low-contrast / blurry corner tags."""
+    """Detector parameters tuned to recover low-contrast / blurry corner tags.
+
+    The wide adaptive-threshold sweep (large WinSizeMax, small step) is what lets
+    all four corner tags survive uneven lighting / glare across captures.
+    """
     p = cv2.aruco.DetectorParameters()
     p.adaptiveThreshWinSizeMin = 3
-    p.adaptiveThreshWinSizeMax = 45
-    p.adaptiveThreshWinSizeStep = 4
+    p.adaptiveThreshWinSizeMax = 101
+    p.adaptiveThreshWinSizeStep = 2
     p.minMarkerPerimeterRate = 0.01
     p.maxMarkerPerimeterRate = 4.0
     p.polygonalApproxAccuracyRate = 0.05
