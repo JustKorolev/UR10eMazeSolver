@@ -1,0 +1,111 @@
+(baaqer_andrey) ariel@nuc2:~/Documents/UR10eMazeSolver$ python3 src/combined_main.py --execute
+[URX] Connecting to robot at 192.168.0.2...
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 68
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 1092
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 1545
+[URX] Connected.
+[URX] Moving to overhead camera pose...
+[URX] Reached overhead camera pose.
+[LOCALIZE] Running maze_localizer.py
+Detected 4 tags: IDs [1, 2, 5, 8]
+Full crop (with tags): 537 x 434 px
+Maze-only crop: 423 x 434 px (bbox [58,0]-[480,433])
+Scale: 0.6837 mm/px -> maze 289.2 x 296.7 mm
+
+Saved:
+  Rectified/cropped maze: /home/ariel/Documents/UR10eMazeSolver/outputs/maze_rectified.png
+  Maze map (for astar):   /home/ariel/Documents/UR10eMazeSolver/outputs/maze_map.png
+  Maze-frame metadata:    /home/ariel/Documents/UR10eMazeSolver/outputs/maze_frame.npz
+  Annotated input:        /home/ariel/Documents/UR10eMazeSolver/outputs/localized_input.png
+
+======================================================================
+TRANSFORM CALIBRATION SUMMARY
+======================================================================
+USE_MANUAL_TAG_TO_MAZE: True
+MAZE_X_AXIS_POINTS_NEGATIVE_BASE_X: True
+ANCHOR_TAG_ID: 8
+maze size: 0.2892 x 0.2967 m (11.39 x 11.68 in)
+T_BASE_TAG:
+[[ 1.      0.      0.      0.3365]
+ [ 0.      1.      0.     -0.9335]
+ [ 0.      0.      1.      0.    ]
+ [ 0.      0.      0.      1.    ]]
+T_TAG_MAZE_CORRECTION:
+[[ 1.      0.      0.     -0.0413]
+ [ 0.      1.      0.     -0.0063]
+ [ 0.      0.      1.      0.    ]
+ [ 0.      0.      0.      1.    ]]
+T_world_maze from localizer:
+[[1. 0. 0. 0.]
+ [0. 1. 0. 0.]
+ [0. 0. 1. 0.]
+ [0. 0. 0. 1.]]
+T_base_maze used for path:
+[[-1.      0.      0.      0.2953]
+ [-0.      1.      0.     -0.9398]
+ [-0.      0.      1.      0.    ]
+ [ 0.      0.      0.      1.    ]]
+Maze corners in robot base frame:
+  top-left origin : [+0.2953, -0.9398, +0.0000] m = [+11.62, -37.00, +0.00] in
+  top-right +x    : [+0.0061, -0.9398, +0.0000] m = [+0.24, -37.00, +0.00] in
+  bottom-left +y  : [+0.2953, -0.6431, +0.0000] m = [+11.62, -25.32, +0.00] in
+  bottom-right    : [+0.0061, -0.6431, +0.0000] m = [+0.24, -25.32, +0.00] in
+======================================================================
+
+[PLAN] Detected 3 boundary openings: [(415, 203), (7, 223), (96, 418)]
+[PLAN] Start node (row,col)=(50,95) px=(404,218)
+[PLAN] Goal node  (row,col)=(51,2) px=(10,223)
+[PLAN] Path found with 344 A* points and 2301 spline points
+
+======================================================================
+MAZE START/END WAYPOINTS
+======================================================================
+Start:
+  pixel xy:        [415.0, 203.0] px
+  maze local xy:   [+0.2844, +0.1391] m
+  robot base xyz:  [+0.0109, -0.8007, +0.1000] m
+  robot base xyz:  [+0.43, -31.52, +3.94] in
+End:
+  pixel xy:        [7.0, 223.0] px
+  maze local xy:   [+0.0048, +0.1528] m
+  robot base xyz:  [+0.2905, -0.7870, +0.1000] m
+  robot base xyz:  [+11.44, -30.98, +3.94] in
+======================================================================
+
+[TRAJ] Saved joint trajectory with shape (2301, 6)
+[URX] Moving to above maze start...
+[URX] Reached above maze start.
+[URX] Moving to maze start contact...
+[URX] Reached maze start contact.
+[EXECUTE] Maze/MPC orchestrator started
+[MPC Thread] Starting simulation...
+Horizon steps:  0.08
+
+________________________________________
+# Time to build mpc solver: 0.013712 sec
+# Number of variables: 78
+# Number of equality constraints: 42
+# Number of inequality constraints: 180
+----------------------------------------
+[MPC Thread] Starting from first trajectory point: [ -77.6  -13.7 -101.8   25.5   90.4   12. ]
+Running simulation....
+[MPC Thread] Simulation completed successfully!
+[URX] Moving to return overhead camera pose...
+^CTraceback (most recent call last):
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 852, in <module>
+    main()
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 848, in main
+    combined_main()
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 838, in combined_main
+    request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 757, in request_and_wait_move
+    ok = shared_state.wait_for_motion(timeout_s=timeout_s)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 209, in wait_for_motion
+    time.sleep(0.05)
+KeyboardInterrupt
+
+(baaqer_andrey) ariel@nuc2:~/Documents/UR10eMazeSolver$ 
