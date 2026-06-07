@@ -2,7 +2,7 @@ import threading
 import time
 import numpy as np
 import urx
-from src.ur10e import UR10e
+from src.ur10e import T_TOOL_PEN, UR10e
 import src.utils as utils
 
 from src.utils import collision_check
@@ -51,10 +51,37 @@ class URXControlThread(threading.Thread):
                     enabled = self.shared_state.robot_enabled
                     u_curr = self.shared_state.u_curr.copy()
                     home_req = self.shared_state.home_requested
+                    motion_req = getattr(self.shared_state, "motion_requested", False)
                     
                 if shutdown:
                     self.send_zero()
                     break
+
+                if motion_req:
+                    with self.shared_state.lock:
+                        target_joints = np.array(self.shared_state.motion_target_joints, dtype=float).reshape(6,)
+                        label = self.shared_state.motion_label
+                        self.shared_state.motion_requested = False
+                        self.shared_state.motion_in_progress = True
+                        self.shared_state.motion_done = False
+                        self.shared_state.motion_error = None
+                    try:
+                        print(f"[URX] Moving to {label}...")
+                        self.robot.movej(target_joints.tolist(), vel=self.vj, acc=self.aj)
+                        self.shared_state.joint_pos = self.robot.getj()
+                        print(f"[URX] Reached {label}.")
+                        with self.shared_state.lock:
+                            self.shared_state.motion_error = None
+                    except Exception as e:
+                        print(f"[URX] Move '{label}' error: {e}")
+                        with self.shared_state.lock:
+                            self.shared_state.motion_error = str(e)
+                    finally:
+                        with self.shared_state.lock:
+                            self.shared_state.motion_in_progress = False
+                            self.shared_state.motion_done = True
+                            self.shared_state.robot_enabled = False
+                    continue
 
                 if home_req:
                     with self.shared_state.lock:
@@ -63,12 +90,10 @@ class URXControlThread(threading.Thread):
                         home_q = self.shared_state.home_joints.tolist()
                         classical_joint_angles = np.rad2deg(self.robot_model.DHModifiedToClassical(home_q))
 
-                        Ttp_pen = utils.trans_z(0.3)
-
-                        safe = utils.SafetyCheck(self.robot_model, classical_joint_angles)
+                        safe = utils.SafetyCheck(self.robot_model, classical_joint_angles, T_TOOL_PEN)
                         
                         print(self.robot_model.FK(classical_joint_angles))
-                        # print(self.robot_model.FK(classical_joint_angles, Ttp_pen))
+                        # print(self.robot_model.FK(classical_joint_angles, T_TOOL_PEN))
                         
                         if not safe:
                             shutdown = True
@@ -93,9 +118,7 @@ class URXControlThread(threading.Thread):
                         
                         classical_joint_angles = np.rad2deg(future_joints)
 
-                        Ttp_pen = utils.trans_z(0.3)
-
-                        safe = utils.SafetyCheck(self.robot_model, classical_joint_angles)
+                        safe = utils.SafetyCheck(self.robot_model, classical_joint_angles, T_TOOL_PEN)
                         
                         # print("FKIN")
                         # print(self.robot_model.FK(np.rad2deg(curr_joints)))

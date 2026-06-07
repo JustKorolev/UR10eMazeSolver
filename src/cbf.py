@@ -47,6 +47,50 @@ class JointLimitCBF:
         return np.asarray(A, dtype=float), np.asarray(b, dtype=float)
 
 
+class EndpointHeightCBF:
+    """CBF constraint that keeps the tool endpoint above a Cartesian limit."""
+
+    def __init__(self, robot, min_height, axis=2, margin=0.0, eps=1e-5):
+        self.robot = robot
+        self.min_height = float(min_height)
+        self.axis = int(axis)
+        self.margin = float(margin)
+        self.eps = float(eps)
+
+        if self.axis not in (0, 1, 2):
+            raise ValueError("axis must be 0 (x), 1 (y), or 2 (z)")
+
+    def _endpoint_position(self, q):
+        q = np.asarray(q, dtype=float).reshape(6,)
+        theta_class_deg = np.rad2deg(self.robot.DHModifiedToClassical(q))
+        T_base_tool = self.robot.FK(theta_class_deg)
+        return T_base_tool[:3, 3]
+
+    def inequalities(self, q, alpha):
+        """
+        Return A, b for the CBF inequality A @ u >= b.
+
+        h(q) = endpoint_axis(q) - min_height - margin >= 0
+        dh/dq @ qdot >= -alpha h
+
+        The controller state and input are joint position/velocity, so dh/dq is
+        the selected row of the geometric Jacobian. This class computes that row
+        with finite differences to avoid depending on an analytic Jacobian.
+        """
+        q = np.asarray(q, dtype=float).reshape(6,)
+        p0 = self._endpoint_position(q)
+        h = p0[self.axis] - self.min_height - self.margin
+
+        grad = np.zeros(6, dtype=float)
+        for i in range(6):
+            q_pert = q.copy()
+            q_pert[i] += self.eps
+            p_pert = self._endpoint_position(q_pert)
+            grad[i] = (p_pert[self.axis] - p0[self.axis]) / self.eps
+
+        return grad.reshape(1, -1), np.array([-alpha * h], dtype=float)
+
+
 class CBFSafetyFilter:
     """
     Post-MPC CBF-QP safety filter.

@@ -3,6 +3,10 @@ import numpy as np
 import src.utils as utils
 import os
 
+PEN_OFFSET_M = 0.314325
+T_TOOL_PEN = utils.trans_z(PEN_OFFSET_M)
+
+
 class UR10e():
     def __init__(self, dt=0.01, workspace_offset=np.eye(4,4)):
         # Kinematics
@@ -79,7 +83,7 @@ class UR10e():
 
         return theta_mod
 
-    def IK(self, solution_type: str, T_base_tp: np.ndarray, Ttp_pen: np.ndarray = utils.trans_z(0.3)) -> np.ndarray:
+    def IK(self, solution_type: str, T_base_tp: np.ndarray, Ttp_pen: np.ndarray = T_TOOL_PEN) -> np.ndarray:
 
         dh_parameters = self.get_modified_dh_parameters([0, 0, 0, 0, 0, 0])  # Placeholder joint angles for DH parameters
         a = dh_parameters['a_i_prev']
@@ -179,7 +183,7 @@ class UR10e():
     def jacobian(self, q):
         pass
 
-    def FK(self, theta_1_6, Ttp_pen = utils.trans_z(0.3)) -> np.ndarray:
+    def FK(self, theta_1_6, Ttp_pen=T_TOOL_PEN) -> np.ndarray:
         theta_deg = np.asarray(theta_1_6, dtype=float).reshape(6,)
 
         dh = self.get_classical_dh_parameters(theta_deg)
@@ -217,7 +221,7 @@ if __name__ == "__main__":
     robot = UR10e()
 
     T_base_tip_example = utils.pose6_to_T([0.5, 0.7, 0.2, np.pi/8, np.pi/2, np.pi/4])
-    Ttp_pen_example = utils.trans_z(0.3)
+    Ttp_pen_example = T_TOOL_PEN
     desired_pose = utils.T_to_pose6(T_base_tip_example)
     print("Desired T_base_tip:\n",T_base_tip_example)
     print("Desired pose:\n", desired_pose)
