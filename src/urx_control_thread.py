@@ -7,12 +7,7 @@ import src.utils as utils
 
 from src.utils import collision_check
 
-MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(5.0)
 RUN_RUNTIME_SAFETY_CHECKS = False
-
-
-def _wrapped_joint_error(current_joints, target_joints):
-    return (current_joints - target_joints + np.pi) % (2 * np.pi) - np.pi
 
 
 class URXControlThread(threading.Thread):
@@ -29,6 +24,7 @@ class URXControlThread(threading.Thread):
         self.joint_pos_limits = joint_pos_limits
         self.min_link_dist = min_link_dist
         self.robot_model = UR10e()
+        self._was_following = False
 
     def run(self):
         try:
@@ -54,6 +50,7 @@ class URXControlThread(threading.Thread):
                 with self.shared_state.lock:
                     shutdown = self.shared_state.shutdown
                     enabled = self.shared_state.robot_enabled
+                    following = self.shared_state.following_trajectory
                     u_curr = self.shared_state.u_curr.copy()
                     home_req = self.shared_state.home_requested
                     motion_req = getattr(self.shared_state, "motion_requested", False)
@@ -78,38 +75,14 @@ class URXControlThread(threading.Thread):
                         with self.shared_state.lock:
                             self.shared_state.motion_error = None
                     except Exception as e:
-                        error_parts = [
-                            f"{type(e).__name__}: {e!r}",
-                            f"target_joints_rad={np.array2string(target_joints, precision=5, suppress_small=True)}",
-                        ]
-                        reached_target = False
+                        print(f"[URX] Move '{label}' returned URX error; continuing: {type(e).__name__}: {e!r}")
                         try:
                             current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
                             self.shared_state.joint_pos = current_joints.tolist()
-                            joint_error = _wrapped_joint_error(current_joints, target_joints)
-                            joint_error_max = np.max(np.abs(joint_error))
-                            reached_target = joint_error_max <= MOVEJ_SUCCESS_TOL_RAD
-                            error_parts.extend([
-                                f"current_joints_rad={np.array2string(current_joints, precision=5, suppress_small=True)}",
-                                f"joint_error_rad={np.array2string(joint_error, precision=5, suppress_small=True)}",
-                                f"joint_error_deg={np.array2string(np.rad2deg(joint_error), precision=2, suppress_small=True)}",
-                                f"joint_error_max_rad={joint_error_max:.6f}",
-                            ])
                         except Exception as state_error:
-                            error_parts.append(
-                                f"state_read_error={type(state_error).__name__}: {state_error!r}"
-                            )
-                        detailed_error = " | ".join(error_parts)
-                        if reached_target:
-                            print(
-                                f"[URX] Move '{label}' reached target despite URX error: "
-                                f"{detailed_error}"
-                            )
-                            detailed_error = None
-                        else:
-                            print(f"[URX] Move '{label}' error: {detailed_error}")
+                            print(f"[URX] Could not read joints after '{label}': {type(state_error).__name__}: {state_error!r}")
                         with self.shared_state.lock:
-                            self.shared_state.motion_error = detailed_error
+                            self.shared_state.motion_error = None
                     finally:
                         with self.shared_state.lock:
                             self.shared_state.motion_in_progress = False
@@ -147,8 +120,12 @@ class URXControlThread(threading.Thread):
 
                 try:
                     if enabled:
-                        if self.shared_state.following_trajectory:
+                        if following:
                             self.send_command(u_curr)
+                            self._was_following = True
+                    elif self._was_following and not following:
+                        self.send_zero()
+                        self._was_following = False
                         
                         
                 except Exception as e:

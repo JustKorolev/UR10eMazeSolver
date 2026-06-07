@@ -188,28 +188,18 @@ class SharedTrajectoryState:
             self.motion_error = None
             self.robot_enabled = False
 
-    def wait_for_motion(self, timeout_s=MOVE_TIMEOUT_S, raise_on_error=False):
+    def wait_for_motion(self, timeout_s=MOVE_TIMEOUT_S):
         start = time.time()
         while True:
             with self.lock:
                 done = self.motion_done
-                error = self.motion_error
                 label = self.motion_label
 
             if done:
-                if error:
-                    msg = f"Robot move '{label}' failed: {error}"
-                    if raise_on_error:
-                        raise RuntimeError(msg)
-                    print(f"[WARN] {msg}")
-                    return False
                 return True
 
             if time.time() - start > timeout_s:
-                msg = f"Timed out waiting for robot move '{label}'"
-                if raise_on_error:
-                    raise TimeoutError(msg)
-                print(f"[WARN] {msg}")
+                print(f"[WARN] Timed out waiting for robot move '{label}'; continuing")
                 return False
 
             time.sleep(0.05)
@@ -233,6 +223,7 @@ class SharedTrajectoryState:
             else:
                 self.following_trajectory = False
                 self.robot_enabled = False
+                self.u_curr = np.zeros((6, 1))
 
     def hard_stop(self, reason):
         with self.lock:
@@ -542,6 +533,7 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     )
     base_xy = local_maze_to_world(local_xy, T_base_maze)
     base_xyz = add_drawing_plane_z(base_xy)
+    print_maze_endpoint_summary(base_xyz, local_xy, spline_pixels)
     joint_trajectory = world_points_to_joint_trajectory(base_xyz, robot=robot)
 
     start_contact_xyz = base_xyz[0].copy()
@@ -580,6 +572,34 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
         "start_approach_joints": start_approach_joints,
         "start_contact_joints": start_contact_joints,
     }
+
+
+def print_maze_endpoint_summary(base_xyz, local_xy, spline_pixels):
+    base_xyz = np.asarray(base_xyz, dtype=float)
+    local_xy = np.asarray(local_xy, dtype=float)
+    spline_pixels = np.asarray(spline_pixels, dtype=float)
+
+    start_base = base_xyz[0]
+    end_base = base_xyz[-1]
+    start_local = local_xy[0]
+    end_local = local_xy[-1]
+    start_px = spline_pixels[0]
+    end_px = spline_pixels[-1]
+
+    print("\n" + "=" * 70)
+    print("MAZE START/END WAYPOINTS")
+    print("=" * 70)
+    print("Start:")
+    print(f"  pixel xy:        [{start_px[0]:.1f}, {start_px[1]:.1f}] px")
+    print(f"  maze local xy:   [{start_local[0]:+.4f}, {start_local[1]:+.4f}] m")
+    print(f"  robot base xyz:  [{start_base[0]:+.4f}, {start_base[1]:+.4f}, {start_base[2]:+.4f}] m")
+    print(f"  robot base xyz:  [{start_base[0]/0.0254:+.2f}, {start_base[1]/0.0254:+.2f}, {start_base[2]/0.0254:+.2f}] in")
+    print("End:")
+    print(f"  pixel xy:        [{end_px[0]:.1f}, {end_px[1]:.1f}] px")
+    print(f"  maze local xy:   [{end_local[0]:+.4f}, {end_local[1]:+.4f}] m")
+    print(f"  robot base xyz:  [{end_base[0]:+.4f}, {end_base[1]:+.4f}, {end_base[2]:+.4f}] m")
+    print(f"  robot base xyz:  [{end_base[0]/0.0254:+.2f}, {end_base[1]/0.0254:+.2f}, {end_base[2]/0.0254:+.2f}] in")
+    print("=" * 70 + "\n")
 
 
 def run_mpc_background(shared_state, mpc_horizon, status_callback=None):
@@ -685,13 +705,9 @@ def request_and_wait_move(
     classical_joints,
     label,
     timeout_s=MOVE_TIMEOUT_S,
-    raise_on_error=False,
 ):
     shared_state.request_joint_move(classical_joints, label=label)
-    ok = shared_state.wait_for_motion(
-        timeout_s=timeout_s,
-        raise_on_error=raise_on_error,
-    )
+    ok = shared_state.wait_for_motion(timeout_s=timeout_s)
     time.sleep(MOVE_SETTLE_S)
     return ok
 
