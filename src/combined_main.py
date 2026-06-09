@@ -74,7 +74,7 @@ URX_STREAM_HZ = 100
 # the AJ limit -> jitter). We resample the joint path uniformly in joint-space
 # arc length so the commanded speed is constant. The target cruise speed sets the
 # point count automatically: N = joint_path_length * SAMPLING_RATE / CRUISE_SPEED.
-CRUISE_SPEED_RAD_S = 0.12  # uniform joint speed along the maze path
+CRUISE_SPEED_RAD_S = 0.3  # uniform joint speed along the maze path
 
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])
 MIN_LINK_DISTANCE = 0.05
@@ -84,7 +84,7 @@ DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "outputs")
 ENDPOINT_HEIGHT_AXIS = 2  # 0=x, 1=y, 2=z in the robot base frame.
 ENDPOINT_HEIGHT_MARGIN = 0.0
 APPROACH_HEIGHT_M = 0.1
-MOVE_TIMEOUT_S = 40.0
+MOVE_TIMEOUT_S = 100.0
 MOVE_SETTLE_S = 1.0
 APRILTAG_SIDE_M = 0.0428625
 RECTIFICATION_PPM = 1500.0
@@ -133,6 +133,7 @@ class SharedTrajectoryState:
         self.robot_connected = False
         self.shutdown = False
         self.joint_pos = None
+        self.joint_history = []
 
         # Kept for URXControlThread compatibility until homing/capture poses are refactored.
         self.home_requested = False
@@ -219,7 +220,7 @@ class SharedTrajectoryState:
                     raise RuntimeError(f"Robot move '{label}' failed: {error}")
                 return
 
-            if time.time() - start > timeout_s:
+            if timeout_s is not None and time.time() - start > timeout_s:
                 raise TimeoutError(f"Timed out waiting for robot move '{label}'")
 
             time.sleep(0.05)
@@ -234,6 +235,16 @@ class SharedTrajectoryState:
             self.following_trajectory = False
             self.robot_enabled = False
             self.u_curr = np.zeros((6, 1))
+
+    def record_joint_history(self, joint_pos, timestamp=None):
+        """Store a timestamped joint reading from the physical robot."""
+        if joint_pos is None:
+            return
+
+        q = np.asarray(joint_pos, dtype=float).reshape(6,)
+        t = time.time() if timestamp is None else float(timestamp)
+        with self.lock:
+            self.joint_history.append((t, *q.tolist()))
 
     def consume_one(self):
         """Pop the first target after MPC has executed one timestep."""
@@ -304,9 +315,9 @@ def plan_spline_pixel_path(
     maze_image,
     start_pixel,
     goal_pixel,
-    N=150,
-    samples_per_segment=5,
-    control_point_stride=2,
+    N=100,
+    samples_per_segment=2,
+    control_point_stride=5,
 ):
     """Run A* on the maze image and return a smoothed pixel path."""
     nodes = create_nodes(N, maze_image)
@@ -328,9 +339,9 @@ def plan_spline_pixel_path(
 def plan_maze_opening_path(
     maze_image,
     output_dir,
-    N=150,
-    samples_per_segment=5,
-    control_point_stride=2,
+    N=100,
+    samples_per_segment=2,
+    control_point_stride=5,
 ):
     """Plan from the two detected maze openings and save debug overlays."""
     nodes = create_nodes(N, maze_image, obstacle_inflation_radius=4)
@@ -815,13 +826,30 @@ def combined_main(argv=None):
     finally:
         if shared_state is not None and urx_thread is not None:
             try:
-                request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
+                request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose", timeout_s=None)
             except Exception as e:
                 print(f"[WARN] Could not return to camera pose: {e}")
             with shared_state.lock:
                 shared_state.shutdown = True
             urx_thread.stop()
             urx_thread.join(timeout=2)
+
+        if shared_state is not None:
+            with shared_state.lock:
+                joint_history = np.array(shared_state.joint_history, dtype=float)
+            if joint_history.size:
+                joint_trace_path = os.path.join(args.outdir, "robot_joint_trace.npy")
+                np.save(joint_trace_path, joint_history)
+                print(f"[LOG] Saved robot joint trace to {joint_trace_path}")
+                csv_path = os.path.join(args.outdir, "robot_joint_trace.csv")
+                np.savetxt(
+                    csv_path,
+                    joint_history,
+                    delimiter=",",
+                    header="time_s,q1,q2,q3,q4,q5,q6",
+                    comments="",
+                )
+                print(f"[LOG] Saved robot joint trace CSV to {csv_path}")
 
     return joint_trajectory
 

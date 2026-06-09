@@ -8,7 +8,7 @@ import src.utils as utils
 from src.utils import collision_check
 
 RUN_RUNTIME_SAFETY_CHECKS = False
-MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(3.0)
+MOVEJ_SUCCESS_TOL_RAD = np.deg2rad(4.0)
 
 # urx 0.9.0's movej(wait=True) returns early (it exits at 80% of the start
 # distance and depends on the flaky is_program_running flag), which preempts
@@ -34,7 +34,7 @@ class URXControlThread(threading.Thread):
         # next one arrives and the robot decelerates/stops every cycle (violent
         # shaking). TrackingRobotMPC streams smoothly with 0.4 s; match it so a
         # late command (or a brief MPC stall) never lets the watchdog lapse.
-        self.cmd_min_time = 0.4
+        self.cmd_min_time = 0.6
         self.robot = None
         self.rtmon = None
         self.running = True
@@ -90,8 +90,14 @@ class URXControlThread(threading.Thread):
             # TODO: FIRST MAKE SURE THAT WE ARE AT THE CONSTANT STARTING POINT
 
             while self.running:
-                self.shared_state.joint_pos = self._get_joints()
-                if self.shared_state.homing:
+                current_joints = self._get_joints()
+                if current_joints is not None:
+                    with self.shared_state.lock:
+                        self.shared_state.joint_pos = current_joints
+                        if self.shared_state.following_trajectory:
+                            self.shared_state.joint_history.append((time.time(), *current_joints))
+
+                if self.shared_state.homing and self.shared_state.joint_pos is not None:
                     modified_joint_pos = self.robot_model.DHClassicaltoModified(self.shared_state.joint_pos)
                     if np.linalg.norm(modified_joint_pos - self.shared_state.home_joints) < 1e-2:
                         self.shared_state.homing = False
