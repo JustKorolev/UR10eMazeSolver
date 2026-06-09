@@ -24,7 +24,7 @@ def _wrapped_joint_error(current_joints, target_joints):
 
 class URXControlThread(threading.Thread):
     def __init__(self, shared_state, robot_ip, hz=100, vj=0.5, aj=0.1,
-                 joint_pos_limits=None, min_link_dist=0.05):
+                 stream_acc=None, joint_pos_limits=None, min_link_dist=0.05):
         super().__init__(daemon=True)
         self.shared_state = shared_state
         self.robot_ip = robot_ip
@@ -40,6 +40,12 @@ class URXControlThread(threading.Thread):
         self.running = True
         self.vj = vj
         self.aj = aj
+        # speedj streaming acceleration. Decoupled from aj (which is the MPC/movej
+        # accel): urx restarts the program every speedj, so the robot only reaches
+        # ~acc*dt of the commanded velocity per tick. This must be high enough to
+        # snap to the commanded velocity within one tick, or the executed motion
+        # (and the drawn maze) comes out shrunk. Falls back to aj if not given.
+        self.stream_acc = float(stream_acc) if stream_acc is not None else aj
         self.joint_pos_limits = joint_pos_limits
         self.min_link_dist = min_link_dist
         self.robot_model = UR10e()
@@ -264,13 +270,13 @@ class URXControlThread(threading.Thread):
 
         self.robot.speedj(
             joint_vels.tolist(),
-            acc=self.aj,
+            acc=self.stream_acc,
             min_time=self.cmd_min_time,
         )
 
     def send_zero(self):
         if self.robot is not None:
-            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=self.cmd_min_time)
+            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.stream_acc, min_time=self.cmd_min_time)
 
     def stop(self):
         self.running = False

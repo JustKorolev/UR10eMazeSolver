@@ -56,7 +56,15 @@ VJ = 0.6  # rad/s
 # was slamming into its own accel limit every cycle (bang-bang chatter) and the
 # robot chased those steps aggressively -> jitter. TrackingRobotMPC runs smooth
 # at 1.2, so match it.
-AJ = 1.2  # rad/s^2
+AJ = 1.2  # rad/s^2  -- MPC acceleration constraint + movej accel (keep gentle
+#                       so the planned velocity *sequence* is smooth)
+# speedj streaming acceleration. urx streams speedj by sending a NEW program each
+# tick, which interrupts the previous one, so the arm re-ramps every command and
+# only reaches ~acc*dt of the commanded velocity (measured ~18% execution -> the
+# drawn maze came out ~1/5 scale). This MUST be high so the robot snaps to each
+# already-smooth commanded velocity within one tick. It is NOT a smoothing knob.
+# Need acc >= v_cmd/dt; cruise 0.12 rad/s at 75 Hz needs ~9, VJ=0.6 needs ~45.
+STREAM_ACC = 20.0  # rad/s^2
 URX_STREAM_HZ = 100
 
 # The MPC consumes exactly one trajectory point per control tick (SAMPLING_RATE),
@@ -748,6 +756,7 @@ def combined_main(argv=None):
             hz=URX_STREAM_HZ,
             vj=VJ,
             aj=AJ,
+            stream_acc=STREAM_ACC,
             joint_pos_limits=JOINT_POS_LIMITS,
             min_link_dist=MIN_LINK_DISTANCE,
         )
