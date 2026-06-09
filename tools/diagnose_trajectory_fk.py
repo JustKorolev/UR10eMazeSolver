@@ -114,6 +114,30 @@ def load_maze_corners(outdir):
     return transform_points(T_base_maze, corners_local), maze_w_m, maze_h_m
 
 
+def fk_pen_xyz(robot, joints_mod):
+    """FK the pen tip for an array of modified-DH joint vectors."""
+    out = []
+    for q_mod in np.asarray(joints_mod, dtype=float):
+        q_class_deg = np.rad2deg(robot.DHModifiedToClassical(q_mod))
+        T = robot.FK(q_class_deg, Ttp_pen=T_TOOL_PEN)
+        out.append(T[:3, 3])
+    return np.asarray(out)
+
+
+def load_actual_run(outdir, robot):
+    """FK the ACTUAL executed joints recorded during the run (mpc_trace.npz)."""
+    trace_path = os.path.join(outdir, "mpc_trace.npz")
+    if not os.path.exists(trace_path):
+        return None
+    trace = np.load(trace_path)
+    if "q_meas" not in trace:
+        return None
+    q_meas = np.asarray(trace["q_meas"], dtype=float)
+    if q_meas.ndim != 2 or q_meas.shape[0] < 2:
+        return None
+    return fk_pen_xyz(robot, q_meas)
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(PROJECT_ROOT, "outputs")
     joint_path = os.path.join(outdir, "joint_trajectory.npy")
@@ -126,13 +150,10 @@ def main():
     maze_corners_base, maze_w_m, maze_h_m = load_maze_corners(outdir)
     robot = UR10e()
 
-    fk_xyz = []
-    for q_mod in joint_traj:
-        q_class_rad = robot.DHModifiedToClassical(q_mod)
-        q_class_deg = np.rad2deg(q_class_rad)
-        T = robot.FK(q_class_deg, Ttp_pen=T_TOOL_PEN)
-        fk_xyz.append(T[:3, 3])
-    fk_xyz = np.asarray(fk_xyz)
+    fk_xyz = fk_pen_xyz(robot, joint_traj)
+
+    # ACTUAL robot run (FK of measured joints during execution), if available.
+    actual_xyz = load_actual_run(outdir, robot)
 
     n = min(len(fk_xyz), len(ref_xyz))
     fk_xyz = fk_xyz[:n]
@@ -151,6 +172,20 @@ def main():
     print(f"  XYZ error mean/max:  {xyz_err.mean():.6f} / {xyz_err.max():.6f} m")
     print(f"  XY error mean/max:   {xy_err.mean()/INCH:.4f} / {xy_err.max()/INCH:.4f} in")
 
+    if actual_xyz is not None:
+        ref_dx = ref_xyz[:, 0].max() - ref_xyz[:, 0].min()
+        ref_dy = ref_xyz[:, 1].max() - ref_xyz[:, 1].min()
+        act_dx = actual_xyz[:, 0].max() - actual_xyz[:, 0].min()
+        act_dy = actual_xyz[:, 1].max() - actual_xyz[:, 1].min()
+        print("  --- ACTUAL run (FK of measured joints) ---")
+        print(f"  actual points:       {len(actual_xyz)}")
+        print(f"  actual start xyz:    {actual_xyz[0]}")
+        print(f"  actual end xyz:      {actual_xyz[-1]}")
+        print(f"  X extent  ref/actual: {ref_dx:.4f} / {act_dx:.4f} m  ratio={act_dx/ref_dx if ref_dx>1e-9 else float('nan'):.3f}")
+        print(f"  Y extent  ref/actual: {ref_dy:.4f} / {act_dy:.4f} m  ratio={act_dy/ref_dy if ref_dy>1e-9 else float('nan'):.3f}")
+    else:
+        print("  (no mpc_trace.npz found -> actual run overlay omitted)")
+
     np.savetxt(
         csv_path,
         np.column_stack((ref_xyz, fk_xyz, err, xy_err, xyz_err)),
@@ -165,6 +200,8 @@ def main():
     extra_xy = [ref_xyz[:, :2], fk_xyz[:, :2], np.array([[0.0, 0.0]])]
     if maze_corners_base is not None:
         extra_xy.append(maze_corners_base[:, :2])
+    if actual_xyz is not None:
+        extra_xy.append(actual_xyz[:, :2])
     all_xy = np.vstack(extra_xy)
     pad = 0.08
     x_min, y_min = all_xy.min(axis=0) - pad
@@ -216,6 +253,7 @@ def main():
             )
         )
 
+    legend_h = 99 if actual_xyz is not None else 72
     svg.extend(
         [
             svg_polyline(ref_px, "#1f77b4", width=3),
@@ -226,11 +264,26 @@ def main():
             svg_text(ref_px[-1], f"[{ref_xyz[-1,0]/INCH:+.1f}, {ref_xyz[-1,1]/INCH:+.1f}] in", "#1f77b4", 12, dx=8, dy=10),
             svg_circle(fk_px[0], "#d62728", "FK start", r=4),
             svg_circle(fk_px[-1], "#d62728", "FK end", r=4),
-            '<rect x="28" y="76" width="360" height="72" fill="white" stroke="#ddd"/>',
-            '<line x1="45" y1="98" x2="95" y2="98" stroke="#1f77b4" stroke-width="3"/>',
-            '<text x="105" y="103" font-size="13" font-family="Arial" fill="#333">intended Cartesian waypoint path</text>',
-            '<line x1="45" y1="125" x2="95" y2="125" stroke="#d62728" stroke-width="2" stroke-dasharray="7 5"/>',
-            '<text x="105" y="130" font-size="13" font-family="Arial" fill="#333">FK(joint trajectory) path</text>',
+        ]
+    )
+
+    if actual_xyz is not None:
+        actual_px = mapper.points(actual_xyz[:, :2])
+        svg.append(svg_polyline(actual_px, "#ff7f0e", width=2))
+        svg.append(svg_circle(actual_px[0], "#ff7f0e", "actual start", r=4))
+        svg.append(svg_circle(actual_px[-1], "#ff7f0e", "actual end", r=4))
+
+    svg.append(f'<rect x="28" y="76" width="380" height="{legend_h}" fill="white" stroke="#ddd"/>')
+    svg.append('<line x1="45" y1="98" x2="95" y2="98" stroke="#1f77b4" stroke-width="3"/>')
+    svg.append('<text x="105" y="103" font-size="13" font-family="Arial" fill="#333">intended Cartesian waypoint path</text>')
+    svg.append('<line x1="45" y1="125" x2="95" y2="125" stroke="#d62728" stroke-width="2" stroke-dasharray="7 5"/>')
+    svg.append('<text x="105" y="130" font-size="13" font-family="Arial" fill="#333">FK(planned joint trajectory) path</text>')
+    if actual_xyz is not None:
+        svg.append('<line x1="45" y1="152" x2="95" y2="152" stroke="#ff7f0e" stroke-width="2"/>')
+        svg.append('<text x="105" y="157" font-size="13" font-family="Arial" fill="#333">ACTUAL robot run (FK of measured joints)</text>')
+
+    svg.extend(
+        [
             f'<text x="30" y="{height - 52}" font-size="13" font-family="Arial" fill="#444">XY error mean/max: {xy_err.mean():.6f} / {xy_err.max():.6f} m ({xy_err.mean()/INCH:.4f} / {xy_err.max()/INCH:.4f} in)</text>',
             f'<text x="30" y="{height - 32}" font-size="13" font-family="Arial" fill="#444">X range: {x_min:.3f}..{x_max:.3f} m, Y range: {y_min:.3f}..{y_max:.3f} m</text>',
             "</svg>",
