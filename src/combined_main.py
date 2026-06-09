@@ -59,6 +59,15 @@ VJ = 0.6  # rad/s
 AJ = 1.2  # rad/s^2
 URX_STREAM_HZ = 100
 
+# The MPC consumes exactly one trajectory point per control tick (SAMPLING_RATE),
+# so the spacing between points IS the feedrate: ref velocity = step/dt. The raw
+# spline is sampled uniformly in PIXEL space, and the nonlinear IK map turns that
+# into very uneven JOINT spacing (measured 4x variation -> ref-accel spikes >10x
+# the AJ limit -> jitter). We resample the joint path uniformly in joint-space
+# arc length so the commanded speed is constant. The target cruise speed sets the
+# point count automatically: N = joint_path_length * SAMPLING_RATE / CRUISE_SPEED.
+CRUISE_SPEED_RAD_S = 0.12  # uniform joint speed along the maze path
+
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])
 MIN_LINK_DISTANCE = 0.05
 ROBOT_IP = "192.168.0.2"
@@ -450,6 +459,47 @@ def world_points_to_joint_trajectory(
     return np.asarray(joint_targets)
 
 
+def resample_joint_trajectory_uniform(
+    joint_trajectory,
+    cruise_speed=CRUISE_SPEED_RAD_S,
+    control_rate=SAMPLING_RATE,
+):
+    """Resample a joint path to be uniform in joint-space arc length.
+
+    The MPC plays back one point per control tick, so even spacing => constant
+    commanded velocity (cruise_speed) and near-zero reference acceleration except
+    at genuine path corners. The number of output points is derived from the
+    target cruise speed, which is the real answer to "how many points": fewer
+    points = faster + jerkier, more points = slower + smoother.
+    """
+    q = np.asarray(joint_trajectory, dtype=float)
+    if q.ndim != 2 or q.shape[0] < 3:
+        return q
+
+    # Unwrap per joint so any 2*pi IK wraparound doesn't inflate arc length.
+    q_un = np.unwrap(q, axis=0)
+    seg = np.linalg.norm(np.diff(q_un, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    total_len = float(s[-1])
+    if total_len < 1e-9:
+        return q
+
+    ds = cruise_speed / float(control_rate)        # joint distance per tick
+    n_new = max(2, int(np.ceil(total_len / ds)))
+    s_new = np.linspace(0.0, total_len, n_new)
+
+    q_new = np.empty((n_new, q.shape[1]), dtype=float)
+    for j in range(q.shape[1]):
+        q_new[:, j] = np.interp(s_new, s, q_un[:, j])
+
+    print(
+        f"[TRAJ] Resampled {q.shape[0]} -> {n_new} points "
+        f"(joint path {total_len:.2f} rad, cruise {cruise_speed:.3f} rad/s, "
+        f"~{n_new/float(control_rate):.1f} s)"
+    )
+    return q_new
+
+
 def build_joint_trajectory_from_maze(
     maze_image,
     start_pixel,
@@ -471,7 +521,8 @@ def build_joint_trajectory_from_maze(
     )
     world_xy = local_maze_to_world(local_xy, T_world_maze)
     world_xyz = add_drawing_plane_z(world_xy)
-    return world_points_to_joint_trajectory(world_xyz, robot=robot)
+    joint_trajectory = world_points_to_joint_trajectory(world_xyz, robot=robot)
+    return resample_joint_trajectory_uniform(joint_trajectory)
 
 
 def run_maze_localizer(image_path, output_dir):
@@ -532,6 +583,7 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     base_xy = local_maze_to_world(local_xy, T_base_maze)
     base_xyz = add_drawing_plane_z(base_xy)
     joint_trajectory = world_points_to_joint_trajectory(base_xyz, robot=robot)
+    joint_trajectory = resample_joint_trajectory_uniform(joint_trajectory)
 
     start_contact_xyz = base_xyz[0].copy()
     start_approach_xyz = start_contact_xyz.copy()
