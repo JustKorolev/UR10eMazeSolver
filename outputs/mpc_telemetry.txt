@@ -1,0 +1,63 @@
+python3 -m src.combined_main --execute
+[URX] Connecting to robot at 192.168.0.2...
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 68
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 1092
+WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
+WARNING:urx.ursecmon:Data length: 1545
+[URX] Connected.
+[URX] Moving to overhead camera pose...
+[URX] Reached overhead camera pose.
+[CAPTURE] Capturing overhead maze image
+[CAPTURE] Saved /home/ariel/Documents/UR10eMazeSolver/outputs/captured_maze.png
+[LOCALIZE] Running maze_localizer.py
+Detected 4 tags: IDs [1, 2, 5, 8]
+Full crop (with tags): 589 x 435 px
+Maze-only crop: 423 x 435 px (bbox [94,0]-[516,434])
+Scale: 0.6878 mm/px -> maze 290.9 x 299.2 mm
+
+Saved:
+  Rectified/cropped maze: /home/ariel/Documents/UR10eMazeSolver/outputs/maze_rectified.png
+  Maze map (for astar):   /home/ariel/Documents/UR10eMazeSolver/outputs/maze_map.png
+  Maze-frame metadata:    /home/ariel/Documents/UR10eMazeSolver/outputs/maze_frame.npz
+  Annotated input:        /home/ariel/Documents/UR10eMazeSolver/outputs/localized_input.png
+[PLAN] Detected 5 boundary openings: [(407, 208), (11, 228), (32, 434), (3, 21), (417, 20)]
+[PLAN] Start node (row,col)=(77,141) px=(398,224)
+[PLAN] Goal node  (row,col)=(78,4) px=(12,227)
+[PLAN] Path found with 470 A* points and 1176 spline points
+[TRAJ] Saved joint trajectory with shape (1176, 6)
+[URX] Moving to above maze start...
+[URX] Reached above maze start.
+[URX] Moving to maze start contact...
+[URX] Reached maze start contact.
+[EXECUTE] Maze/MPC orchestrator started
+[MPC Thread] Starting simulation...
+Horizon steps:  0.08
+
+________________________________________
+# Time to build mpc solver: 0.015064 sec
+# Number of variables: 78
+# Number of equality constraints: 42
+# Number of inequality constraints: 180
+----------------------------------------
+[MPC Thread] Starting from first trajectory point: [ -77.6  -13.7 -101.8   25.5   90.4   12. ]
+Running simulation....
+
+============================================================
+[TRACE] MPC loop telemetry
+  samples: 1176   duration: 15.67 s
+  loop rate Hz:  mean=77.1 min=17.9 max=512.2 (target 75.0)
+  loop dt ms:    mean=13.3 max=55.7
+  |u| rad/s:     mean=0.046 max=0.174
+  track err deg: mean=4.28 max=14.52
+  u sign-flips/joint: [24, 45, 49, 43, 26, 24]
+============================================================
+
+[TRACE] Saved telemetry to /home/ariel/Documents/UR10eMazeSolver/outputs/mpc_trace.npz
+[MPC Thread] Simulation completed successfully!
+[URX] Moving to return overhead camera pose...
+[URX] Move 'return overhead camera pose' did not settle within timeout.
+[WARN] not at requested joint target after 'return overhead camera pose': max_error=30.91 deg, error_deg=[ -3.6   13.85 -30.91  29.42  -0.15  -0.96]
+[WARN] Could not return to camera pose: Robot move 'return overhead camera pose' failed: not at requested joint target after 'return overhead camera pose': max_error=30.91 deg, error_deg=[ -3.6   13.85 -30.91  29.42  -0.15  -0.96]
+[URX] Thread exited.

@@ -282,7 +282,7 @@ def plan_spline_pixel_path(
     maze_image,
     start_pixel,
     goal_pixel,
-    N=70,
+    N=150,
     samples_per_segment=5,
     control_point_stride=2,
 ):
@@ -306,7 +306,7 @@ def plan_spline_pixel_path(
 def plan_maze_opening_path(
     maze_image,
     output_dir,
-    N=70,
+    N=150,
     samples_per_segment=5,
     control_point_stride=2,
 ):
