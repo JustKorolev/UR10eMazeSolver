@@ -34,6 +34,7 @@ class URXControlThread(threading.Thread):
         # and the robot decelerates/stops every cycle (violent shaking).
         self.cmd_min_time = max(0.1, 3.0 * self.dt)
         self.robot = None
+        self.rtmon = None
         self.running = True
         self.vj = vj
         self.aj = aj
@@ -42,12 +43,36 @@ class URXControlThread(threading.Thread):
         self.robot_model = UR10e()
         self._was_following = False
 
+    def _get_joints(self):
+        """Read joints from the 125 Hz real-time interface when available.
+
+        urx's getj() reads the secondary monitor at only ~10 Hz, which makes the
+        MPC see stale (frozen) feedback for ~7 cycles at a time and produces a
+        ~10 Hz sawtooth in the velocity command (jitter). The RT monitor updates
+        at 125 Hz and removes that.
+        """
+        if self.rtmon is not None:
+            try:
+                q = self.rtmon.q_actual()
+                if q is not None:
+                    return list(q)
+            except Exception:
+                pass
+        return self.robot.getj()
+
     def run(self):
         try:
             print(f"[URX] Connecting to robot at {self.robot_ip}...")
             self.robot = urx.Robot(self.robot_ip)
+            try:
+                self.rtmon = self.robot.get_realtime_monitor()
+                self.rtmon.q_actual(wait=True)
+                print("[URX] Real-time (125 Hz) joint feedback enabled.")
+            except Exception as e:
+                self.rtmon = None
+                print(f"[URX] RT monitor unavailable, falling back to 10 Hz getj: {e}")
 
-            self.shared_state.joint_pos = self.robot.getj()
+            self.shared_state.joint_pos = self._get_joints()
 
             with self.shared_state.lock:
                 self.shared_state.robot_connected = True
@@ -57,7 +82,7 @@ class URXControlThread(threading.Thread):
             # TODO: FIRST MAKE SURE THAT WE ARE AT THE CONSTANT STARTING POINT
 
             while self.running:
-                self.shared_state.joint_pos = self.robot.getj()
+                self.shared_state.joint_pos = self._get_joints()
                 if self.shared_state.homing:
                     modified_joint_pos = self.robot_model.DHClassicaltoModified(self.shared_state.joint_pos)
                     if np.linalg.norm(modified_joint_pos - self.shared_state.home_joints) < 1e-2:
@@ -95,7 +120,7 @@ class URXControlThread(threading.Thread):
                     except Exception as e:
                         print(f"[URX] Move '{label}' returned URX error; continuing: {type(e).__name__}: {e!r}")
                         try:
-                            current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+                            current_joints = np.asarray(self._get_joints(), dtype=float).reshape(6,)
                             self.shared_state.joint_pos = current_joints.tolist()
                         except Exception as state_error:
                             print(f"[URX] Could not read joints after '{label}': {type(state_error).__name__}: {state_error!r}")
@@ -104,7 +129,7 @@ class URXControlThread(threading.Thread):
                     finally:
                         motion_error = None
                         try:
-                            current_joints = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+                            current_joints = np.asarray(self._get_joints(), dtype=float).reshape(6,)
                             self.shared_state.joint_pos = current_joints.tolist()
                             joint_error = _wrapped_joint_error(current_joints, target_joints)
                             joint_error_max = float(np.max(np.abs(joint_error)))
@@ -148,7 +173,7 @@ class URXControlThread(threading.Thread):
 
                         print(f"[URX] Moving to home position...")
                         self.robot.movej(np.deg2rad(classical_joint_angles), vel=self.vj, acc=self.aj)
-                        self.shared_state.joint_pos = self.robot.getj()
+                        self.shared_state.joint_pos = self._get_joints()
 
                         print(f"[URX] Home reached.")
                     except Exception as e:
@@ -201,7 +226,7 @@ class URXControlThread(threading.Thread):
         start = time.time()
         settle = 0
         while time.time() - start < timeout_s:
-            current = np.asarray(self.robot.getj(), dtype=float).reshape(6,)
+            current = np.asarray(self._get_joints(), dtype=float).reshape(6,)
             self.shared_state.joint_pos = current.tolist()
 
             err = float(np.max(np.abs(_wrapped_joint_error(current, target))))
