@@ -29,6 +29,10 @@ class URXControlThread(threading.Thread):
         self.shared_state = shared_state
         self.robot_ip = robot_ip
         self.dt = 1.0 / hz
+        # speedj watchdog: must stay safely longer than the interval between
+        # commands, otherwise the command expires before the next one arrives
+        # and the robot decelerates/stops every cycle (violent shaking).
+        self.cmd_min_time = max(0.1, 3.0 * self.dt)
         self.robot = None
         self.running = True
         self.vj = vj
@@ -234,12 +238,12 @@ class URXControlThread(threading.Thread):
         self.robot.speedj(
             joint_vels.tolist(),
             acc=self.aj,
-            min_time=0.02,
+            min_time=self.cmd_min_time,
         )
 
     def send_zero(self):
         if self.robot is not None:
-            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=0.02)
+            self.robot.speedj([0, 0, 0, 0, 0, 0], acc=self.aj, min_time=self.cmd_min_time)
 
     def stop(self):
         self.running = False
