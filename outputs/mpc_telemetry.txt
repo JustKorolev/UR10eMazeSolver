@@ -6,6 +6,7 @@ WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet 
 WARNING:urx.ursecmon:Data length: 1092
 WARNING:urx.ursecmon:tried 11 times to find a packet in data, advertised packet size: -2, type: 3
 WARNING:urx.ursecmon:Data length: 1545
+[URX] Real-time (125 Hz) joint feedback enabled.
 [URX] Connected.
 [URX] Moving to overhead camera pose...
 [URX] Reached overhead camera pose.
@@ -13,20 +14,20 @@ WARNING:urx.ursecmon:Data length: 1545
 [CAPTURE] Saved /home/ariel/Documents/UR10eMazeSolver/outputs/captured_maze.png
 [LOCALIZE] Running maze_localizer.py
 Detected 4 tags: IDs [1, 2, 5, 8]
-Full crop (with tags): 589 x 435 px
-Maze-only crop: 423 x 435 px (bbox [94,0]-[516,434])
-Scale: 0.6878 mm/px -> maze 290.9 x 299.2 mm
+Full crop (with tags): 590 x 435 px
+Maze-only crop: 425 x 435 px (bbox [93,0]-[517,434])
+Scale: 0.6877 mm/px -> maze 292.3 x 299.2 mm
 
 Saved:
   Rectified/cropped maze: /home/ariel/Documents/UR10eMazeSolver/outputs/maze_rectified.png
   Maze map (for astar):   /home/ariel/Documents/UR10eMazeSolver/outputs/maze_map.png
   Maze-frame metadata:    /home/ariel/Documents/UR10eMazeSolver/outputs/maze_frame.npz
   Annotated input:        /home/ariel/Documents/UR10eMazeSolver/outputs/localized_input.png
-[PLAN] Detected 5 boundary openings: [(407, 208), (11, 228), (32, 434), (3, 21), (417, 20)]
-[PLAN] Start node (row,col)=(77,141) px=(398,224)
-[PLAN] Goal node  (row,col)=(78,4) px=(12,227)
-[PLAN] Path found with 470 A* points and 1176 spline points
-[TRAJ] Saved joint trajectory with shape (1176, 6)
+[PLAN] Detected 4 boundary openings: [(407, 209), (13, 229), (4, 21), (419, 20)]
+[PLAN] Start node (row,col)=(77,140) px=(398,224)
+[PLAN] Goal node  (row,col)=(79,4) px=(12,230)
+[PLAN] Path found with 466 A* points and 1166 spline points
+[TRAJ] Saved joint trajectory with shape (1166, 6)
 [URX] Moving to above maze start...
 [URX] Reached above maze start.
 [URX] Moving to maze start contact...
@@ -36,7 +37,7 @@ Saved:
 Horizon steps:  0.08
 
 ________________________________________
-# Time to build mpc solver: 0.015064 sec
+# Time to build mpc solver: 0.017507 sec
 # Number of variables: 78
 # Number of equality constraints: 42
 # Number of inequality constraints: 180
@@ -46,18 +47,29 @@ Running simulation....
 
 ============================================================
 [TRACE] MPC loop telemetry
-  samples: 1176   duration: 15.67 s
-  loop rate Hz:  mean=77.1 min=17.9 max=512.2 (target 75.0)
-  loop dt ms:    mean=13.3 max=55.7
-  |u| rad/s:     mean=0.046 max=0.174
-  track err deg: mean=4.28 max=14.52
-  u sign-flips/joint: [24, 45, 49, 43, 26, 24]
+  samples: 1166   duration: 15.66 s
+  loop rate Hz:  mean=106.7 min=9.2 max=718.2 (target 75.0)
+  loop dt ms:    mean=13.4 max=108.4
+  |u| rad/s:     mean=0.046 max=0.169
+  track err deg: mean=3.54 max=13.01
+  u sign-flips/joint: [22, 39, 41, 35, 22, 22]
 ============================================================
 
 [TRACE] Saved telemetry to /home/ariel/Documents/UR10eMazeSolver/outputs/mpc_trace.npz
 [MPC Thread] Simulation completed successfully!
 [URX] Moving to return overhead camera pose...
-[URX] Move 'return overhead camera pose' did not settle within timeout.
-[WARN] not at requested joint target after 'return overhead camera pose': max_error=30.91 deg, error_deg=[ -3.6   13.85 -30.91  29.42  -0.15  -0.96]
-[WARN] Could not return to camera pose: Robot move 'return overhead camera pose' failed: not at requested joint target after 'return overhead camera pose': max_error=30.91 deg, error_deg=[ -3.6   13.85 -30.91  29.42  -0.15  -0.96]
-[URX] Thread exited.
+^CTraceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 768, in <module>
+    main()
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 764, in main
+    combined_main()
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 752, in combined_main
+    request_and_wait_move(shared_state, CAMERA_JOINTS, "return overhead camera pose")
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 671, in request_and_wait_move
+    shared_state.wait_for_motion(timeout_s=timeout_s)
+  File "/home/ariel/Documents/UR10eMazeSolver/src/combined_main.py", line 203, in wait_for_motion
+    time.sleep(0.05)
+KeyboardInterrupt
+
