@@ -156,6 +156,14 @@ class EmbeddedSimEnvironment(object):
             sleep_time = next_tick - time.time()
             if sleep_time > 0:
                 time.sleep(sleep_time)
+            else:
+                # The solve overran the budget. Do NOT try to "catch up" by
+                # running the next iterations back-to-back: the reference is
+                # advanced one point per iteration (consume_one), so a catch-up
+                # burst races the reference forward and surges the robot
+                # (measured as 700+ Hz bursts and velocity lurches). Resync the
+                # clock so the loop simply resumes at the target rate.
+                next_tick = time.time()
 
         _, error = self.controller(x_next, self.ran_iterations * self.dt)
         e_vec = np.append(e_vec, error.reshape((6, 1)), axis=1)

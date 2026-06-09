@@ -51,7 +51,12 @@ DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
 DRAWING_TOOL_ORIENTATION = (np.pi, 0.01, 0.01)
 
 VJ = 0.6  # rad/s
-AJ = 3.0  # rad/s^2
+# AJ feeds BOTH the MPC acceleration constraint (via get_limits) and the speedj
+# acceleration. At 3.0 the trace showed max|du| == AJ*dt exactly, i.e. the MPC
+# was slamming into its own accel limit every cycle (bang-bang chatter) and the
+# robot chased those steps aggressively -> jitter. TrackingRobotMPC runs smooth
+# at 1.2, so match it.
+AJ = 1.2  # rad/s^2
 URX_STREAM_HZ = 100
 
 JOINT_POS_LIMITS = np.array([6.1087, 6.1087, 6.1087, 6.1087, 6.1087, 6.1087])

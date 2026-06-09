@@ -29,10 +29,12 @@ class URXControlThread(threading.Thread):
         self.shared_state = shared_state
         self.robot_ip = robot_ip
         self.dt = 1.0 / hz
-        # speedj watchdog: must stay safely longer than the interval between
-        # commands, otherwise the command expires before the next one arrives
-        # and the robot decelerates/stops every cycle (violent shaking).
-        self.cmd_min_time = max(0.1, 3.0 * self.dt)
+        # speedj watchdog (the `t` arg): must stay safely longer than the
+        # interval between commands, otherwise the command expires before the
+        # next one arrives and the robot decelerates/stops every cycle (violent
+        # shaking). TrackingRobotMPC streams smoothly with 0.4 s; match it so a
+        # late command (or a brief MPC stall) never lets the watchdog lapse.
+        self.cmd_min_time = 0.4
         self.robot = None
         self.rtmon = None
         self.running = True
