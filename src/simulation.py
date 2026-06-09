@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
@@ -97,6 +98,13 @@ class EmbeddedSimEnvironment(object):
         start_wall = time.time()
         next_tick = start_wall
 
+        # Telemetry: capture what the controller actually sees/commands on the
+        # real robot so we can diagnose jitter offline (saved to outputs/).
+        trace_wall = []
+        trace_qmeas = []
+        trace_u = []
+        trace_err = []
+
         self.ran_iterations = 0
         while self.shared_state.following_trajectory:
             loop_start = time.time()
@@ -132,6 +140,11 @@ class EmbeddedSimEnvironment(object):
             with self.shared_state.lock:
                 self.shared_state.u_curr = np.array(u).reshape(6, 1)
 
+            trace_wall.append(time.time() - start_wall)
+            trace_qmeas.append(np.asarray(x, dtype=float).reshape(6))
+            trace_u.append(np.asarray(u, dtype=float).reshape(6))
+            trace_err.append(np.asarray(error, dtype=float).reshape(6))
+
             t = np.append(t, t[-1] + self.dt)
             x_vec = np.append(x_vec, np.array(x_next).reshape(self.model.n, 1), axis=1)
             u_vec = np.append(u_vec, np.array(u).reshape(self.model.m, 1), axis=1)
@@ -151,7 +164,53 @@ class EmbeddedSimEnvironment(object):
         self.x_vec = x_vec
         self.u_vec = u_vec
         self.e_vec = e_vec
+
+        self._save_trace(trace_wall, trace_qmeas, trace_u, trace_err)
         return t, x_vec, u_vec
+
+    def _save_trace(self, trace_wall, trace_qmeas, trace_u, trace_err):
+        """Save measured-vs-reference telemetry and print the real loop rate."""
+        if len(trace_wall) < 2:
+            print("[TRACE] Not enough samples to save telemetry.")
+            return
+
+        wall = np.asarray(trace_wall, dtype=float)
+        qmeas = np.asarray(trace_qmeas, dtype=float)
+        u = np.asarray(trace_u, dtype=float)
+        err = np.asarray(trace_err, dtype=float)
+        # reference = measured - error  (error = wrap(q_meas - q_ref))
+        qref = qmeas - err
+
+        loop_dt = np.diff(wall)
+        rate_hz = 1.0 / loop_dt
+        print("\n" + "=" * 60)
+        print("[TRACE] MPC loop telemetry")
+        print(f"  samples: {len(wall)}   duration: {wall[-1]:.2f} s")
+        print(f"  loop rate Hz:  mean={rate_hz.mean():.1f} "
+              f"min={rate_hz.min():.1f} max={rate_hz.max():.1f} "
+              f"(target {1.0/self.dt:.1f})")
+        print(f"  loop dt ms:    mean={loop_dt.mean()*1e3:.1f} "
+              f"max={loop_dt.max()*1e3:.1f}")
+        print(f"  |u| rad/s:     mean={np.abs(u).mean():.3f} "
+              f"max={np.abs(u).max():.3f}")
+        print(f"  track err deg: mean={np.rad2deg(np.abs(err)).mean():.2f} "
+              f"max={np.rad2deg(np.abs(err)).max():.2f}")
+        # sign flips in u = chattering indicator
+        flips = np.sum(np.abs(np.diff(np.sign(u), axis=0)) > 1, axis=0)
+        print(f"  u sign-flips/joint: {flips.tolist()}")
+        print("=" * 60 + "\n")
+
+        try:
+            out_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
+            os.makedirs(out_dir, exist_ok=True)
+            np.savez(
+                os.path.join(out_dir, "mpc_trace.npz"),
+                wall=wall, q_meas=qmeas, q_ref=qref, u=u, err=err,
+            )
+            print(f"[TRACE] Saved telemetry to {os.path.join(out_dir, 'mpc_trace.npz')}")
+        except Exception as e:
+            print(f"[TRACE] Could not save telemetry: {e}")
 
     def visualize(self, number):
         """
