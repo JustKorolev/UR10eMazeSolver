@@ -352,6 +352,17 @@ def plan_maze_opening_path(
     openings = detect_openings(maze_image)
     print(f"[PLAN] Detected {len(openings)} boundary openings: {openings}")
 
+    if len(openings) > 2:
+        # Keep the two openings farthest apart (entrance/exit are on opposite
+        # sides); preserve scan order so the right-edge one stays the start.
+        pts = np.asarray(openings, dtype=float)
+        best = max(
+            ((i, j) for i in range(len(pts)) for j in range(i + 1, len(pts))),
+            key=lambda ij: np.sum((pts[ij[0]] - pts[ij[1]]) ** 2),
+        )
+        openings = [openings[best[0]], openings[best[1]]]
+        print(f"[PLAN] Using farthest-apart pair: {openings}")
+
     if len(openings) >= 2:
         def nearest_interior(pixel_xy):
             x, y = pixel_xy

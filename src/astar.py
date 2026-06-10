@@ -167,8 +167,13 @@ def inflate_obstacles(image, inflation_radius=1, free_threshold=128):
 def maze_wall_bbox(map_image, free_threshold=128):
     """Bounding box (x0, y0, x1, y1) of the maze's wall structure.
 
-    The maze walls form one big dark blob (tags are masked white in the crop),
-    so the largest dark connected component's bounding box is the maze extent.
+    The maze extent is set by the OUTER wall ring, which is the dark component
+    that *spans* the largest bounding box -- not necessarily the one with the
+    most pixels (a blob of connected interior walls can out-count the thin
+    ring, which previously cut off part of the maze and blocked its nodes as
+    "exterior"). Tag chunks and specks have small bboxes and are ignored; any
+    sizable component whose bbox is comparable to the ring's is unioned in so
+    a ring broken by glare at an opening still yields the full extent.
     Returns None if no dark pixels are found.
     """
     import cv2
@@ -178,11 +183,22 @@ def maze_wall_bbox(map_image, free_threshold=128):
     nlab, _, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
     if nlab <= 1:
         return None
-    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    x0 = int(stats[best, cv2.CC_STAT_LEFT])
-    y0 = int(stats[best, cv2.CC_STAT_TOP])
-    x1 = x0 + int(stats[best, cv2.CC_STAT_WIDTH]) - 1
-    y1 = y0 + int(stats[best, cv2.CC_STAT_HEIGHT]) - 1
+
+    pix_area = stats[1:, cv2.CC_STAT_AREA]
+    bbox_area = stats[1:, cv2.CC_STAT_WIDTH] * stats[1:, cv2.CC_STAT_HEIGHT]
+    # Drop specks/noise before comparing spans.
+    valid = pix_area >= max(50, int(0.0005 * dark.size))
+    if not valid.any():
+        return None
+    spans = np.where(valid, bbox_area, 0)
+    keep = np.where(spans >= 0.5 * spans.max())[0]
+
+    x0 = min(int(stats[1 + k, cv2.CC_STAT_LEFT]) for k in keep)
+    y0 = min(int(stats[1 + k, cv2.CC_STAT_TOP]) for k in keep)
+    x1 = max(int(stats[1 + k, cv2.CC_STAT_LEFT])
+             + int(stats[1 + k, cv2.CC_STAT_WIDTH]) - 1 for k in keep)
+    y1 = max(int(stats[1 + k, cv2.CC_STAT_TOP])
+             + int(stats[1 + k, cv2.CC_STAT_HEIGHT]) - 1 for k in keep)
     return x0, y0, x1, y1
 
 
@@ -327,6 +343,37 @@ def _edge_openings(profile, valid, expect_high, min_len=6, dev=8):
     return runs, (float(a), float(b))
 
 
+def _is_genuine_opening(dark, x, y, inward, corner_margin, probe_len,
+                        wall_run=3, skip=3):
+    """Validate an opening candidate against the actual wall pixels.
+
+    A genuine entrance/exit is a gap in the outer wall, so a probe along the
+    inward normal travels through a free corridor. Artifacts fail this:
+    - glare/threshold dips leave the wall intact just inside the point,
+    - sheet-margin/tag dips sit OUTSIDE the maze, so the probe crosses the
+      outer wall further in,
+    - corner junk (tag chunks, sheet edges) is rejected by a corner margin.
+    """
+    h, w = dark.shape
+    for cx, cy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if (x - cx) ** 2 + (y - cy) ** 2 < corner_margin ** 2:
+            return False
+
+    dx, dy = inward
+    run = 0
+    for k in range(skip, probe_len):
+        px, py = x + dx * k, y + dy * k
+        if not (0 <= px < w and 0 <= py < h):
+            return False
+        if dark[py, px]:
+            run += 1
+            if run >= wall_run:  # crossed a wall band -> not a real gap
+                return False
+        else:
+            run = 0
+    return True
+
+
 def detect_openings(map_image, free_threshold=128):
     """Detect the maze's entrance/exit gaps in its outer boundary wall.
 
@@ -334,6 +381,11 @@ def detect_openings(map_image, free_threshold=128):
     center as an (x, y) pixel point anchored ON the maze's outer wall edge for
     that side (so e.g. a left-edge opening sits at the left wall, not at the
     first interior wall past the gap). One point per detected opening.
+
+    Candidates are validated with an inward free-corridor probe so that glare
+    dips, sheet-margin/tag dips, and corner artifacts are rejected; only gaps
+    that actually lead into the maze are returned (in right/left/bottom/top
+    scan order).
     """
     image = _to_grayscale(map_image)
     dark = image < free_threshold
@@ -349,24 +401,35 @@ def detect_openings(map_image, free_threshold=128):
     # Each opening is anchored on the (possibly tilted) outer wall, evaluated
     # from that edge's robust line fit at the gap center -> tilt-invariant and
     # always on the true boundary (not the first interior wall past the gap).
-    points = []
+    candidates = []  # (x, y, inward normal)
     runs, (a, b) = _edge_openings(rightmost, valid_rows, expect_high=True)
     for s, e in runs:
         yc = (s + e) // 2
-        points.append((int(round(a * yc + b)), yc))
+        candidates.append((int(round(a * yc + b)), yc, (-1, 0)))
     runs, (a, b) = _edge_openings(leftmost, valid_rows, expect_high=False)
     for s, e in runs:
         yc = (s + e) // 2
-        points.append((int(round(a * yc + b)), yc))
+        candidates.append((int(round(a * yc + b)), yc, (1, 0)))
     runs, (a, b) = _edge_openings(bottommost, valid_cols, expect_high=True)
     for s, e in runs:
         xc = (s + e) // 2
-        points.append((xc, int(round(a * xc + b))))
+        candidates.append((xc, int(round(a * xc + b)), (0, -1)))
     runs, (a, b) = _edge_openings(topmost, valid_cols, expect_high=False)
     for s, e in runs:
         xc = (s + e) // 2
-        points.append((xc, int(round(a * xc + b))))
-    return points
+        candidates.append((xc, int(round(a * xc + b)), (0, 1)))
+
+    corner_margin = 0.08 * min(h, w)
+    probe_len = max(12, int(0.07 * min(h, w)))
+    points = [
+        (x, y)
+        for x, y, inward in candidates
+        if _is_genuine_opening(dark, x, y, inward, corner_margin, probe_len)
+    ]
+    if points:
+        return points
+    # Validation rejected everything (unusual imaging); keep old behavior.
+    return [(x, y) for x, y, _ in candidates]
 
 
 def largest_free_component(nodes):
