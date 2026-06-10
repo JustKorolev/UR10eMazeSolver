@@ -315,12 +315,12 @@ def plan_spline_pixel_path(
     maze_image,
     start_pixel,
     goal_pixel,
-    N=120,
+    N=60,
     samples_per_segment=10,
     control_point_stride=3,
 ):
     """Run A* on the maze image and return a smoothed pixel path."""
-    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=6)
+    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=8)
     start_node = nearest_free_node(nodes, start_pixel)
     goal_node = nearest_free_node(nodes, goal_pixel)
     if start_node is None or goal_node is None:
@@ -339,12 +339,12 @@ def plan_spline_pixel_path(
 def plan_maze_opening_path(
     maze_image,
     output_dir,
-    N=120,
+    N=60,
     samples_per_segment=10,
     control_point_stride=3,
 ):
     """Plan from the two detected maze openings and save debug overlays."""
-    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=6)
+    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=8)
     interior = largest_free_component(nodes)
     if not interior:
         raise RuntimeError("No connected free maze interior found")

@@ -106,15 +106,23 @@ def bresenham_pixels(start, end):
     return points
 
 
-def line_is_free(image, start, end, free_threshold=128):
-    """Check that every pixel on a candidate edge lies in bright/free space."""
+def line_is_free(image, start, end, free_threshold=128, margin=2):
+    """Check that every pixel on a candidate edge lies in bright/free space.
+    
+    Checks not just the centerline but also pixels within margin pixels of the
+    line to ensure a safer corridor.
+    """
     height, width = image.shape
 
     for x, y in bresenham_pixels(start, end):
-        if x < 0 or x >= width or y < 0 or y >= height:
-            return False
-        if image[y, x] < free_threshold:
-            return False
+        # Check center pixel and margin around it
+        for dx in range(-margin, margin + 1):
+            for dy in range(-margin, margin + 1):
+                cx, cy = x + dx, y + dy
+                if cx < 0 or cx >= width or cy < 0 or cy >= height:
+                    return False
+                if image[cy, cx] < free_threshold:
+                    return False
 
     return True
 
