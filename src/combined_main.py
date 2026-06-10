@@ -46,7 +46,7 @@ except ImportError:
 SAMPLING_RATE = 75  # Hz
 MPC_HORIZON = 10
 
-WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.05, np.pi, 0.01, 0.01])
+WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.0, np.pi, 0.01, 0.01])
 DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
 DRAWING_TOOL_ORIENTATION = (np.pi, 0.01, 0.01)
 
@@ -108,8 +108,8 @@ T_BASE_TAG[:3, 3] = [
 USE_MANUAL_TAG_TO_MAZE = True
 T_TAG_MAZE_CORRECTION = np.eye(4, dtype=float)
 T_TAG_MAZE_CORRECTION[:3, 3] = [
-    -1.0 * 0.0254,
-    -1.05 * 0.0254,
+    -0.9 * 0.0254,
+    -1.25 * 0.0254,
     0.0,
 ]
 
@@ -320,7 +320,7 @@ def plan_spline_pixel_path(
     control_point_stride=3,
 ):
     """Run A* on the maze image and return a smoothed pixel path."""
-    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=8)
+    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=13)
     start_node = nearest_free_node(nodes, start_pixel)
     goal_node = nearest_free_node(nodes, goal_pixel)
     if start_node is None or goal_node is None:
@@ -508,7 +508,7 @@ def resample_joint_trajectory_uniform(
 
     ds = cruise_speed / float(control_rate)
     # Slightly oversample to keep more joint targets while preserving uniform spacing.
-    n_new = max(2, int(np.ceil(total_len / ds * 2.0)))
+    n_new = max(2, int(np.ceil(total_len / ds * 1.5)))
     s_new = np.linspace(0.0, total_len, n_new)
 
     q_new = np.empty((n_new, q.shape[1]), dtype=float)
