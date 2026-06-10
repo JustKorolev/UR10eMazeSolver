@@ -185,7 +185,7 @@ def create_nodes(
     free_threshold=128,
     free_fraction_threshold=0.5,
     allow_corner_cutting=False,
-    obstacle_inflation_radius=4,
+    obstacle_inflation_radius=12,
     confine_to_maze=True,
 ):
     """
@@ -456,8 +456,7 @@ def spline_path(path, samples_per_segment=10, control_point_stride=10):
     Return a Catmull-Rom spline interpolation of an A* path in pixel space.
 
     The spline passes through every control_point_stride-th A* point, plus the
-    start and goal. It does not re-check collision against the map image, so use
-    this as a geometric smoothing step after A*.
+    start and goal.
     """
     points = path_to_pixels(path)
     if points is None:
@@ -607,7 +606,7 @@ if __name__ == "__main__":
         )
     print(f"Loaded maze map {map_path} ({arr.shape[1]}x{arr.shape[0]} px)")
 
-    nodes = create_nodes(100, arr, obstacle_inflation_radius=4)
+    nodes = create_nodes(100, arr, obstacle_inflation_radius=12)
     free_nodes = [node for node in nodes if not node.blocked]
     if not free_nodes:
         raise RuntimeError("No free cells found in the maze map; check thresholds.")

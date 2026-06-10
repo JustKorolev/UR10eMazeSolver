@@ -3,7 +3,7 @@ import numpy as np
 import src.utils as utils
 import os
 
-PEN_OFFSET_M = 0.314325
+PEN_OFFSET_M = 0.29
 T_TOOL_PEN = utils.trans_z(PEN_OFFSET_M)
 
 

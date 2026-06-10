@@ -44,19 +44,19 @@ except ImportError:
 
 
 SAMPLING_RATE = 75  # Hz
-MPC_HORIZON = SAMPLING_RATE // 12
+MPC_HORIZON = 10
 
-WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.1, np.pi, 0.01, 0.01])
+WORKSPACE_OFFSET = pose6_to_T([0, -0.8, 0.05, np.pi, 0.01, 0.01])
 DRAWING_PLANE_Z = float(WORKSPACE_OFFSET[2, 3])
 DRAWING_TOOL_ORIENTATION = (np.pi, 0.01, 0.01)
 
-VJ = 0.6  # rad/s
+VJ = 0.3  # rad/s
 # AJ feeds BOTH the MPC acceleration constraint (via get_limits) and the speedj
 # acceleration. At 3.0 the trace showed max|du| == AJ*dt exactly, i.e. the MPC
 # was slamming into its own accel limit every cycle (bang-bang chatter) and the
 # robot chased those steps aggressively -> jitter. TrackingRobotMPC runs smooth
 # at 1.2, so match it.
-AJ = 1.2  # rad/s^2  -- MPC acceleration constraint + movej accel (keep gentle
+AJ = 4.0 # rad/s^2  -- MPC acceleration constraint + movej accel (keep gentle
 #                       so the planned velocity *sequence* is smooth)
 # speedj streaming acceleration. urx streams speedj by sending a NEW program each
 # tick, which interrupts the previous one, so the arm re-ramps every command and
@@ -97,8 +97,8 @@ CAMERA_JOINTS = np.deg2rad([-68.0, -104.0, -87.0, -91.0, 90.5, 199.0])
 # pose in the UR base frame. p_base = T_BASE_TAG @ p_tag.
 T_BASE_TAG = np.eye(4, dtype=float)
 T_BASE_TAG[:3, 3] = [
-    13.25 * 0.0254,
-    -36.75 * 0.0254,
+    13.75 * 0.0254,
+    -36.9 * 0.0254,
     0.0,
 ]
 
@@ -108,8 +108,8 @@ T_BASE_TAG[:3, 3] = [
 USE_MANUAL_TAG_TO_MAZE = True
 T_TAG_MAZE_CORRECTION = np.eye(4, dtype=float)
 T_TAG_MAZE_CORRECTION[:3, 3] = [
-    -1.625 * 0.0254,
-    -0.25 * 0.0254,
+    -1.0 * 0.0254,
+    -1.05 * 0.0254,
     0.0,
 ]
 
@@ -315,12 +315,12 @@ def plan_spline_pixel_path(
     maze_image,
     start_pixel,
     goal_pixel,
-    N=100,
-    samples_per_segment=2,
-    control_point_stride=5,
+    N=120,
+    samples_per_segment=10,
+    control_point_stride=3,
 ):
     """Run A* on the maze image and return a smoothed pixel path."""
-    nodes = create_nodes(N, maze_image)
+    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=6)
     start_node = nearest_free_node(nodes, start_pixel)
     goal_node = nearest_free_node(nodes, goal_pixel)
     if start_node is None or goal_node is None:
@@ -339,12 +339,12 @@ def plan_spline_pixel_path(
 def plan_maze_opening_path(
     maze_image,
     output_dir,
-    N=100,
-    samples_per_segment=2,
-    control_point_stride=5,
+    N=120,
+    samples_per_segment=10,
+    control_point_stride=3,
 ):
     """Plan from the two detected maze openings and save debug overlays."""
-    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=4)
+    nodes = create_nodes(N, maze_image, obstacle_inflation_radius=6)
     interior = largest_free_component(nodes)
     if not interior:
         raise RuntimeError("No connected free maze interior found")
@@ -483,19 +483,11 @@ def resample_joint_trajectory_uniform(
     cruise_speed=CRUISE_SPEED_RAD_S,
     control_rate=SAMPLING_RATE,
 ):
-    """Resample a joint path to be uniform in joint-space arc length.
-
-    The MPC plays back one point per control tick, so even spacing => constant
-    commanded velocity (cruise_speed) and near-zero reference acceleration except
-    at genuine path corners. The number of output points is derived from the
-    target cruise speed, which is the real answer to "how many points": fewer
-    points = faster + jerkier, more points = slower + smoother.
-    """
+    """Resample a joint path to be uniform in joint-space arc length."""
     q = np.asarray(joint_trajectory, dtype=float)
     if q.ndim != 2 or q.shape[0] < 3:
         return q
 
-    # Unwrap per joint so any 2*pi IK wraparound doesn't inflate arc length.
     q_un = np.unwrap(q, axis=0)
     seg = np.linalg.norm(np.diff(q_un, axis=0), axis=1)
     s = np.concatenate([[0.0], np.cumsum(seg)])
@@ -503,8 +495,9 @@ def resample_joint_trajectory_uniform(
     if total_len < 1e-9:
         return q
 
-    ds = cruise_speed / float(control_rate)        # joint distance per tick
-    n_new = max(2, int(np.ceil(total_len / ds)))
+    ds = cruise_speed / float(control_rate)
+    # Slightly oversample to keep more joint targets while preserving uniform spacing.
+    n_new = max(2, int(np.ceil(total_len / ds * 2.0)))
     s_new = np.linspace(0.0, total_len, n_new)
 
     q_new = np.empty((n_new, q.shape[1]), dtype=float)
@@ -601,8 +594,9 @@ def build_joint_trajectory_from_localized_outputs(output_dir, robot=None, return
     )
     base_xy = local_maze_to_world(local_xy, T_base_maze)
     base_xyz = add_drawing_plane_z(base_xy)
-    joint_trajectory = world_points_to_joint_trajectory(base_xyz, robot=robot)
-    joint_trajectory = resample_joint_trajectory_uniform(joint_trajectory)
+    joint_trajectory = resample_joint_trajectory_uniform(
+        world_points_to_joint_trajectory(base_xyz, robot=robot)
+    )
 
     start_contact_xyz = base_xyz[0].copy()
     start_approach_xyz = start_contact_xyz.copy()
@@ -742,10 +736,12 @@ def modified_to_classical_joints(robot, q_modified):
     return robot.DHModifiedToClassical(np.asarray(q_modified, dtype=float).reshape(6,))
 
 
-def request_and_wait_move(shared_state, classical_joints, label, timeout_s=MOVE_TIMEOUT_S):
+def request_and_wait_move(shared_state, classical_joints, label, timeout_s=MOVE_TIMEOUT_S, settle_s=None):
+    if settle_s is None:
+        settle_s = MOVE_SETTLE_S
     shared_state.request_joint_move(classical_joints, label=label)
     shared_state.wait_for_motion(timeout_s=timeout_s)
-    time.sleep(MOVE_SETTLE_S)
+    time.sleep(settle_s)
 
 
 def combined_main(argv=None):
@@ -795,13 +791,6 @@ def combined_main(argv=None):
         print("[DONE] Planning complete. Re-run with --execute to command the robot.")
         return joint_trajectory
 
-    mpc_thread = threading.Thread(
-        target=run_mpc_background,
-        args=(shared_state, MPC_HORIZON),
-        daemon=True,
-    )
-    mpc_thread.start()
-
     start_approach_classical = modified_to_classical_joints(
         robot_model,
         plan["start_approach_joints"],
@@ -814,15 +803,15 @@ def combined_main(argv=None):
     request_and_wait_move(shared_state, start_approach_classical, "above maze start")
     request_and_wait_move(shared_state, start_contact_classical, "maze start contact")
 
-    shared_state.load_joint_trajectory(joint_trajectory)
-    print("[EXECUTE] Maze/MPC orchestrator started")
-    shared_state.start_following()
-
+    print("[EXECUTE] Starting trajectory execution")
+    
     try:
-        while shared_state.following_trajectory:
-            time.sleep(0.5)
+        for i, joint_point in enumerate(joint_trajectory):
+            classical_joints = modified_to_classical_joints(robot_model, joint_point)
+            label = f"trajectory point {i+1}/{len(joint_trajectory)}"
+            request_and_wait_move(shared_state, classical_joints, label, settle_s=0.05)
     except KeyboardInterrupt:
-        shared_state.stop_following()
+        print("[EXECUTE] Interrupted by user")
     finally:
         if shared_state is not None and urx_thread is not None:
             try:
