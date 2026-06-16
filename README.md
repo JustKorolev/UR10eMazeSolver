@@ -6,17 +6,15 @@ This repo captures an overhead image of a physical maze, localizes and rectifies
 
 ## Demo Video
 
-The final hardware demo video is included in this repo:
+Autoplaying preview:
 
-[Watch the UR10e maze solver demo](outputs/235b_final_demo_maze_solver%20(1).mp4)
+<p align="center">
+  <img src="./outputs/demo_preview.gif" alt="UR10e maze solver demo preview" width="720">
+</p>
 
-<video src="outputs/235b_final_demo_maze_solver%20(1).mp4" controls width="720"></video>
+Full MP4:
 
-If the video does not render in your viewer, open:
-
-```text
-outputs/235b_final_demo_maze_solver (1).mp4
-```
+[outputs/235b_final_demo_maze_solver (1).mp4](outputs/235b_final_demo_maze_solver%20(1).mp4)
 
 ## What This Repo Can Do
 
@@ -53,11 +51,16 @@ RealSense capture
   -> UR10e drawing
 ```
 
+The figures below are the actual saved outputs from the final pipeline run.
+
 ## 1. Capture and AprilTag Localization
 
 The robot first moves to a fixed overhead pose. A wrist-mounted Intel RealSense camera captures a color image at 1280 by 720. Four AprilTags around the maze are detected and used to locate the sheet.
 
-![Localized input with AprilTags](outputs/localized_input.png)
+<p align="center">
+  <img src="./outputs/localized_input.png" alt="Localized input with AprilTags" width="650">
+</p>
+<p align="center"><em>Captured image with AprilTag detections and the localization overlay.</em></p>
 
 The tag corners define a quadrilateral around the maze sheet. Since the maze is planar, the perspective projection can be represented by a homography. For image point `p` and rectified point `p'`:
 
@@ -71,7 +74,10 @@ The homography `H` is estimated from four point correspondences. This flattens t
 
 The homography produces a flat, cropped maze image. This is the image used by the planner.
 
-![Rectified maze](outputs/maze_rectified.png)
+<p align="center">
+  <img src="./outputs/maze_rectified.png" alt="Rectified maze" width="520">
+</p>
+<p align="center"><em>Rectified and cropped maze image used for planning.</em></p>
 
 The metric scale is computed from the known AprilTag side length:
 
@@ -87,7 +93,10 @@ The rectified maze is converted into a grid graph. Bright cells are free space a
 
 The planner detects boundary openings and validates them with an inward free-space probe. This avoids false openings caused by tags, shadows, glare, or crop margins. The final path starts at the right opening and ends at the left opening.
 
-![A* overlay](outputs/astar_overlay.png)
+<p align="center">
+  <img src="./outputs/astar_overlay.png" alt="A* path overlay" width="520">
+</p>
+<p align="center"><em>A* path overlay. Green is the start opening and blue is the goal opening.</em></p>
 
 The planner also restricts the search to the maze wall bounding box so A* cannot route around the outside of the maze. The bounding box is based on the outer wall span, not just the largest dark connected component, because interior wall blobs can otherwise be mistaken for the full maze.
 
@@ -95,7 +104,10 @@ The planner also restricts the search to the maze wall bounding box so A* cannot
 
 The raw A* path is valid but jagged. A spline is fit through the path so the pen has a smoother reference to follow.
 
-![A* spline overlay](outputs/astar_spline_overlay.png)
+<p align="center">
+  <img src="./outputs/astar_spline_overlay.png" alt="Spline-smoothed A* path overlay" width="520">
+</p>
+<p align="center"><em>Spline-smoothed path sent into the robot trajectory pipeline.</em></p>
 
 The spline is saved as pixel coordinates in:
 
@@ -166,7 +178,7 @@ For joint path length `L`, cruise speed `v_c`, and controller period `dt`:
 N_points = ceil(L / (v_c * dt))
 ```
 
-This makes the reference velocity smoother and prevents large reference acceleration spikes.
+This makes the reference velocity smooth and avoids acceleration spikes.
 
 ## 8. MPC Tracking
 
@@ -197,7 +209,43 @@ The execution layer uses both `movej` and `speedj`:
 - `movej` is used for static moves, such as moving to the overhead camera pose, moving above the maze start, lowering the pen to contact, and returning after the run.
 - `speedj` is used during the drawing phase, where the MPC streams joint velocity commands.
 
-Joint feedback is read from the UR real-time monitor instead of the slow default `getj()` interface. This gives high-rate feedback and reduces control jitter.
+Joint feedback is read from the UR real-time monitor instead of the slow default `getj()` interface. This gives high-rate feedback for the MPC loop.
+
+## 10. Safety and CBFs
+
+The repo includes runtime safety checks and optional CBF filtering.
+
+Available safety layers:
+
+- Joint limit checks.
+- Link self-collision checks.
+- Endpoint height CBF to keep the pen/tool above a minimum height.
+- Optional post-MPC CBF-QP safety filter.
+
+The relevant files are:
+
+```text
+src/cbf.py
+src/simulation.py
+src/urx_control_thread.py
+src/combined_main.py
+```
+
+To enable runtime collision and joint-limit checks before `speedj` commands, set this in `src/urx_control_thread.py`:
+
+```python
+RUN_RUNTIME_SAFETY_CHECKS = True
+```
+
+To enable the CBF filter during MPC execution, set this in `src/simulation.py`:
+
+```python
+ENABLE_CBF = True
+```
+
+The CBF filter is constructed in `SharedTrajectoryState` in `src/combined_main.py`. By default it includes `EndpointHeightCBF`, which enforces a minimum endpoint height relative to the workspace plane. Extra constraints can be added in `src/cbf.py`, such as `JointLimitCBF`.
+
+For final maze drawing, these filters may be disabled during debugging to inspect raw MPC tracking. For safer hardware testing, enable them and verify the resulting commands with telemetry.
 
 ## Hardware
 
