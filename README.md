@@ -1,247 +1,341 @@
-# Real-Time Hand-Guided Trajectory Tracking for UR10e Robot Arm
+# UR10e Maze Solver
 
-A comprehensive system for intuitive human-robot interaction that enables real-time control of a UR10e robotic arm through natural hand motion. The system combines computer vision-based hand tracking with Model Predictive Control (MPC) to translate arbitrary human gestures into smooth, feasible robot trajectories that respect physical constraints and safety requirements.
+Autonomous maze solving and drawing with a UR10e robot arm.
 
-## Overview
+This repo captures an overhead image of a physical maze, localizes and rectifies it with AprilTags, plans a valid path through the maze, converts that path into robot joint targets, and executes the path on a UR10e with MPC velocity control.
 
-This project demonstrates advanced trajectory generation and control techniques for robotic systems, featuring:
+## Demo Video
 
-- **Real-time hand tracking** using MediaPipe computer vision
-- **Model Predictive Control** for smooth trajectory execution
-- **Comprehensive safety systems** with collision avoidance
-- **Dynamic trajectory interpolation** respecting joint velocity limits
-- **Multi-threaded architecture** for concurrent control and visualization
+The final hardware demo video is included in this repo:
 
-The system allows users to draw trajectories in space using hand gestures, which the robot reproduces physically with high accuracy and smoothness. Applications include drawing tasks, trajectory demonstration, and intuitive robot programming.
+[Watch the UR10e maze solver demo](outputs/235b_final_demo_maze_solver%20(1).mp4)
 
-## Technical Architecture
+<video src="outputs/235b_final_demo_maze_solver%20(1).mp4" controls width="720"></video>
 
-### 1. Hand Tracking Pipeline
+If the video does not render in your viewer, open:
 
-The vision system captures user hand motion in real-time using a standard webcam and the MediaPipe hand tracking model:
-
-- **Detection**: Single hand detection with index finger tip extraction as the primary control point
-- **Coordinate Mapping**: Normalized image coordinates scaled to physical workspace dimensions (50cm × 25cm)
-- **Smoothing**: Exponential filtering to reduce vision noise and improve trajectory continuity
-- **Workspace Transformation**: Conversion to robot base frame coordinates with configurable workspace offset
-
-```python
-# Key parameters
-x_span_m = 0.50   # 50 cm workspace width
-y_span_m = 0.25   # 25 cm workspace height
-alpha = 0.25      # Smoothing factor
+```text
+outputs/235b_final_demo_maze_solver (1).mp4
 ```
 
-### 2. Trajectory Interpolation
+## What This Repo Can Do
 
-Raw hand motion often violates robot velocity constraints, requiring intelligent interpolation to ensure feasible execution:
+- Move the UR10e to a fixed overhead camera pose.
+- Capture a RealSense color image of the maze.
+- Detect AprilTags around the maze.
+- Rectify the maze with a homography.
+- Detect the maze entrance and exit.
+- Run A* through the maze without routing through walls or outside margins.
+- Smooth the A* result with a spline.
+- Convert the pixel path into metric robot-base waypoints.
+- Convert Cartesian waypoints into UR10e joint targets with inverse kinematics.
+- Resample the joint path for smooth, feasible playback.
+- Track the trajectory with an MPC controller.
+- Stream robot commands to the UR10e and record telemetry for debugging.
+- Save overlays, diagnostics, traces, and generated trajectories in `outputs/`.
 
-**Joint Space Interpolation**:
-- Computes required joint velocities: `v_req = |Δθ|/Δt`
-- Subdivides motion to respect velocity limits: `N = max(1, max_i(|Δθ_i|/(Δt·v_max,i)))`
-- Generates intermediate waypoints: `θ^(j) = θ_k + (j/N)·Δθ`
+## Pipeline Overview
 
-**Cartesian Space Interpolation** (for planar tasks):
-- Preserves geometric shape through Cartesian interpolation
-- Constrains motion to desired drawing plane: `z^(j) = z_workspace`
-- Falls back to joint space if inverse kinematics fails
+The full pipeline is:
 
-### 3. Model Predictive Control
-
-The MPC controller converts reference trajectories into smooth, constraint-aware joint commands:
-
-**System Model**:
+```text
+RealSense capture
+  -> AprilTag detection
+  -> homography rectification
+  -> maze opening detection
+  -> A* planning
+  -> spline smoothing
+  -> pixel-to-metric transform
+  -> robot-base transform
+  -> inverse kinematics
+  -> joint-space resampling
+  -> MPC tracking
+  -> UR10e drawing
 ```
-q_{k+1} = q_k + Δt·u_k
+
+## 1. Capture and AprilTag Localization
+
+The robot first moves to a fixed overhead pose. A wrist-mounted Intel RealSense camera captures a color image at 1280 by 720. Four AprilTags around the maze are detected and used to locate the sheet.
+
+![Localized input with AprilTags](outputs/localized_input.png)
+
+The tag corners define a quadrilateral around the maze sheet. Since the maze is planar, the perspective projection can be represented by a homography. For image point `p` and rectified point `p'`:
+
+```text
+p' ~ H p
 ```
-where `q_k ∈ ℝ^6` are joint angles and `u_k ∈ ℝ^6` are commanded joint velocities.
 
-**Optimization Problem**:
+The homography `H` is estimated from four point correspondences. This flattens the maze without needing to separately calibrate the camera intrinsics and extrinsics.
+
+## 2. Rectified Maze
+
+The homography produces a flat, cropped maze image. This is the image used by the planner.
+
+![Rectified maze](outputs/maze_rectified.png)
+
+The metric scale is computed from the known AprilTag side length:
+
+```text
+meters_per_pixel = tag_side_meters / average_tag_edge_pixels
 ```
-min Σ(||q_{k+i} - q^ref_{k+i}||²_Q + ||u_{k+i}||²_R) + ||q_{k+N} - q^ref_{k+N}||²_P
+
+For the final run, the scale was about `0.69 mm/px`.
+
+## 3. A* Maze Planning
+
+The rectified maze is converted into a grid graph. Bright cells are free space and dark cells are walls. Walls are inflated before graph creation to keep the pen path away from wall pixels.
+
+The planner detects boundary openings and validates them with an inward free-space probe. This avoids false openings caused by tags, shadows, glare, or crop margins. The final path starts at the right opening and ends at the left opening.
+
+![A* overlay](outputs/astar_overlay.png)
+
+The planner also restricts the search to the maze wall bounding box so A* cannot route around the outside of the maze. The bounding box is based on the outer wall span, not just the largest dark connected component, because interior wall blobs can otherwise be mistaken for the full maze.
+
+## 4. Spline Smoothing
+
+The raw A* path is valid but jagged. A spline is fit through the path so the pen has a smoother reference to follow.
+
+![A* spline overlay](outputs/astar_spline_overlay.png)
+
+The spline is saved as pixel coordinates in:
+
+```text
+outputs/spline_pixels.npy
 ```
 
-**Constraints**:
-- Joint position limits: `q_min ≤ q_{k+i} ≤ q_max`
-- Velocity limits: `u_min ≤ u_{k+i} ≤ u_max`
-- Acceleration limits: `Δu_min ≤ u_{k+i} - u_{k+i-1} ≤ Δu_max`
+## 5. Coordinate Transforms
 
-**Implementation**: CasADi optimization framework with IPOPT solver for real-time performance.
+The spline points are converted from pixels to robot-base coordinates.
 
-### 4. Safety and Collision Avoidance
+First, rectified pixels are converted to metric maze coordinates:
 
-Multi-layered safety system ensures safe operation under arbitrary user input:
+```text
+x_maze = u * meters_per_pixel
+y_maze = v * meters_per_pixel
+z_maze = 0
+```
 
-**Layer 1 - Joint Limits**:
-- Per-joint absolute position limits (±350° working range)
-- Real-time monitoring of all joint configurations
+Then a homogeneous transform chain maps the maze point into the UR10e base frame:
 
-**Layer 2 - Self-Collision Detection**:
-- Forward kinematics computation of all link origins
-- Line segment approximation of robot links
-- Minimum distance calculation between non-adjacent link pairs
-- Safety threshold: 5cm minimum separation distance
+```text
+p_base = T_base_tag * T_tag_maze * p_maze
+```
 
-**Layer 3 - Ground Plane Avoidance**:
-- Ensures all link origins remain above workspace boundary
-- Prevents collision with table or environmental obstacles
+where:
 
-**Hard Stop Mechanism**:
-- Immediate velocity zeroing upon constraint violation
-- GUI collision alerts with detailed reason codes
-- Manual collision clearing required before trajectory resumption
+- `T_base_tag` is the measured pose of the anchor AprilTag in the robot base frame.
+- `T_tag_maze` is the measured offset from the anchor tag to the maze origin.
+- A fixed axis calibration handles the maze image x-axis direction relative to the robot base x-axis.
 
-## System Performance
+The output waypoints are saved in:
 
-### Control Specifications
-- **Sampling Rate**: 75 Hz
-- **MPC Horizon**: 15 steps (0.2 seconds)
-- **Joint Velocity Limits**: 0.4 rad/s (conservative working limits)
-- **Joint Acceleration Limits**: 1.2 rad/s²
-- **Tracking Accuracy**: Sub-centimeter end-effector positioning
+```text
+outputs/base_waypoints_xyz_m.npy
+outputs/T_base_maze.npy
+```
 
-### Real-Time Capabilities
-- **Hand Tracking Latency**: <20ms
-- **MPC Solve Time**: <10ms per iteration
-- **Total System Latency**: <50ms end-to-end
-- **Trajectory Smoothness**: C¹ continuous joint motion
+## 6. Inverse Kinematics
 
-## Installation and Setup
+Each Cartesian waypoint is converted into a UR10e joint target. The robot is controlled at the pen tip, not at the flange, so the tool transform is included:
 
-### Prerequisites
+```text
+T_base_pen(q) = FK(q) * T_tcp_pen
+```
+
+For each desired pen pose, the IK solves:
+
+```text
+FK(q) = T_base_pen_desired * inv(T_tcp_pen)
+```
+
+The implementation uses a consistent elbow-up UR10e solution branch so the arm does not switch configurations during the path.
+
+The joint trajectory is saved in:
+
+```text
+outputs/joint_trajectory.npy
+```
+
+## 7. Joint-Space Resampling
+
+The spline is evenly spaced in image space, but after IK the joint-space spacing is not uniform. Since the MPC consumes one point per tick, uneven joint spacing creates uneven speed. To fix this, the joint trajectory is resampled at uniform joint-space arc length.
+
+For joint path length `L`, cruise speed `v_c`, and controller period `dt`:
+
+```text
+N_points = ceil(L / (v_c * dt))
+```
+
+This makes the reference velocity smoother and prevents large reference acceleration spikes.
+
+## 8. MPC Tracking
+
+The drawing phase uses an MPC controller with a single-integrator joint model:
+
+```text
+q[k+1] = q[k] + dt * u[k]
+```
+
+where:
+
+- `q` is the 6D joint state.
+- `u` is the 6D joint velocity command.
+- `dt = 1 / 75 s`.
+
+The MPC tracks the next window of joint targets while enforcing:
+
+- Joint velocity limits.
+- Joint acceleration limits.
+- Smooth command changes.
+
+The first velocity command from each MPC solve is sent to the robot.
+
+## 9. Robot Execution
+
+The execution layer uses both `movej` and `speedj`:
+
+- `movej` is used for static moves, such as moving to the overhead camera pose, moving above the maze start, lowering the pen to contact, and returning after the run.
+- `speedj` is used during the drawing phase, where the MPC streams joint velocity commands.
+
+Joint feedback is read from the UR real-time monitor instead of the slow default `getj()` interface. This gives high-rate feedback and reduces control jitter.
+
+## Hardware
+
+- UR10e robot arm.
+- Intel RealSense camera for overhead image capture.
+- AprilTags around the maze sheet.
+- Pen tool mounted to the robot.
+- Printed maze on a flat drawing surface.
+- Robot and control computer on the same network.
+
+## Python Packages
+
+Install the repo dependencies with:
+
 ```bash
-# Core dependencies
-pip install numpy matplotlib casadi
-pip install mediapipe==0.10.21
-pip install opencv-python
-pip install urx  # UR robot communication
-
-# Optional: YAML configuration support
-pip install pyyaml
+pip install -r requirements.txt
 ```
 
-### Hardware Requirements
-- UR10e robotic arm with network connectivity
-- Standard USB webcam for hand tracking
-- Whiteboard or drawing surface (for demonstration tasks)
+The main packages are:
 
-### Configuration
-Key parameters in `src/combined_main.py`:
+- `numpy` for numerical work.
+- `opencv-contrib-python` for image processing and AprilTag/ArUco support.
+- `pyrealsense2` for RealSense camera capture.
+- `urx==0.11.0` for UR robot communication.
+- `casadi` for the MPC optimization problem.
+- `PyYAML` for parameter loading.
+- `matplotlib` for plots and diagnostics.
+- `cvxpy` for optimization utilities used by safety/filtering code.
 
-```python
-SAMPLING_RATE = 75  # Hz
-MPC_HORIZON = SAMPLING_RATE // 5  # 0.2 seconds
-WORKSPACE_OFFSET = pose6_to_T([0, -0.8, -0.015, np.pi, 0.05, 0.05])
-VJ = 0.4   # rad/s - conservative velocity limit
-AJ = 1.2   # rad/s² - acceleration limit
+## Main Files
+
+```text
+src/combined_main.py        Main pipeline and execution entry point
+src/maze_localizer.py       AprilTag detection, homography, rectification
+src/astar.py                Maze graph creation, opening detection, A*, spline overlays
+src/mpc.py                  CasADi MPC controller
+src/simulation.py           MPC execution loop and telemetry saving
+src/trajectory_tracking.py  MPC thread wrapper
+src/urx_control_thread.py   UR10e communication, movej and speedj commands
+src/ur10e.py                UR10e kinematics and IK
+src/utils.py                Geometry, transforms, safety utilities
+tools/diagnose_trajectory_fk.py
+tools/diagnose_mpc_commands.py
 ```
 
-## Usage
+## How To Run
 
-### Basic Operation
+### Full robot run
+
+Run from the repo root:
+
 ```bash
-# Launch complete system
-python src/combined_main.py
-
-# Simulation mode (no robot required)
-python src/simulation.py
+python3 -m src.combined_main --execute
 ```
 
-### GUI Controls
-- **Start Tracking**: Begin hand-guided trajectory following
-- **Record Trajectory**: Capture hand motion for playback
-- **Play Trajectory**: Execute recorded motion sequence
-- **Emergency Stop**: Immediate motion halt with safety lockout
-- **Clear Collision**: Reset safety system after collision detection
+This will:
 
-### Trajectory Recording and Playback
-The system supports trajectory recording for repeatable motion sequences:
+1. Connect to the UR10e.
+2. Move to the overhead camera pose.
+3. Capture the maze image.
+4. Run localization.
+5. Plan the A* and spline path.
+6. Move to the start.
+7. Lower the pen.
+8. Run MPC and draw the maze solution.
 
-1. **Recording Phase**: Capture hand motion with timestamp synchronization
-2. **Storage**: Trajectories saved as joint-space waypoint sequences
-3. **Playback**: Smooth reproduction with identical MPC control parameters
+### Run using an existing image
 
-## Example Output Plots
+```bash
+python3 -m src.combined_main --no-capture --image outputs/captured_maze.png --execute
+```
 
-### End-Effector Trajectory Tracking
-*[Placeholder for trajectory tracking plots showing reference vs. actual end-effector motion]*
+### Run planning only
 
-### Joint State Evolution
-*[Placeholder for joint angle and velocity plots demonstrating smooth motion profiles]*
+```bash
+python3 -m src.combined_main --no-capture --image outputs/captured_maze.png
+```
 
-### MPC Tracking Performance
-*[Placeholder for tracking error plots showing controller performance metrics]*
+This produces the planning and localization outputs without commanding the robot.
 
-### Safety System Validation
-*[Placeholder for collision avoidance demonstration plots]*
+## Useful Outputs
 
-## Video Demonstrations
+After a run, the main outputs are:
 
-### Real-Time Hand Tracking Control
-*[Placeholder for video showing live hand-guided robot motion]*
+```text
+outputs/captured_maze.png          Raw RealSense capture
+outputs/localized_input.png        AprilTag detections and localization overlay
+outputs/maze_rectified.png         Rectified maze image
+outputs/maze_map.png               Planner map
+outputs/astar_overlay.png          Raw A* path
+outputs/astar_spline_overlay.png   Smoothed spline path
+outputs/spline_pixels.npy          Spline path in pixels
+outputs/base_waypoints_xyz_m.npy   Cartesian robot-base waypoints
+outputs/joint_trajectory.npy       IK joint trajectory
+outputs/mpc_trace.npz              MPC and robot telemetry
+outputs/mpc_telemetry.txt          Text telemetry summary
+outputs/actual_run_overlay.png     Actual run overlay from measured robot motion
+```
 
-### Drawing Task Execution
-*[Placeholder for video demonstrating whiteboard drawing capabilities]*
+## Diagnostics
 
-### Safety System Response
-*[Placeholder for video showing collision avoidance and emergency stop functionality]*
+Forward-kinematics check:
 
-## Technical Achievements
+```bash
+python tools/diagnose_trajectory_fk.py outputs
+```
 
-### Advanced Control Implementation
-- **Real-time MPC**: Sub-10ms optimization solve times for 6-DOF system
-- **Constraint Handling**: Simultaneous satisfaction of position, velocity, and acceleration limits
-- **Stability Guarantees**: Terminal cost design ensuring closed-loop stability
+MPC command diagnostic:
 
-### Vision-Control Integration
-- **Low-Latency Pipeline**: End-to-end latency under 50ms for responsive control
-- **Noise Robustness**: Exponential filtering and MPC prediction compensate for vision noise
-- **Workspace Scaling**: Intuitive mapping between screen coordinates and robot workspace
+```bash
+python tools/diagnose_mpc_commands.py outputs
+```
 
-### Safety Engineering
-- **Defense in Depth**: Multiple independent collision checking layers
-- **Predictive Safety**: Forward simulation prevents unsafe configurations
-- **Graceful Degradation**: Safe system shutdown with detailed diagnostic information
+These tools help check:
 
-### Software Architecture
-- **Multi-Threading**: Concurrent hand tracking, MPC computation, and robot communication
-- **Modular Design**: Separated concerns enabling easy modification and testing
-- **Real-Time Performance**: Deterministic timing with priority-based thread scheduling
+- Whether the planned joint trajectory maps back to the expected Cartesian path.
+- Whether the actual robot motion matches the planned path.
+- Whether MPC commands are saturating velocity or acceleration limits.
+- Whether the path is being physically under-executed by the robot.
 
-## Applications and Extensions
+## Report
 
-### Current Capabilities
-- **Trajectory Demonstration**: Intuitive robot programming through gesture
-- **Drawing Tasks**: Precise reproduction of hand-drawn patterns
-- **Motion Teaching**: Record and replay complex motion sequences
+The project report is included here:
 
-### Future Extensions
-- **Full 6-DOF Control**: Extension to complete end-effector pose control
-- **Force Control Integration**: Contact-aware manipulation tasks
-- **Multi-Robot Coordination**: Synchronized control of multiple robot arms
-- **Advanced Vision**: Integration of object recognition and scene understanding
+```text
+report/UR10e_Maze_Solver.pdf
+```
 
-## Research Contributions
+If the report PDF is not present, the LaTeX source is in:
 
-This work advances the state-of-the-art in human-robot interaction through:
+```text
+report/report.tex
+```
 
-1. **Real-time MPC for gesture control**: Novel application of predictive control to vision-guided robotics
-2. **Integrated safety architecture**: Comprehensive collision avoidance system for arbitrary user input
-3. **Trajectory interpolation algorithms**: Dynamic feasibility enforcement for human-generated motion
-4. **Multi-threaded control architecture**: High-performance implementation enabling real-time operation
+## Notes
 
-## Technical Documentation
-
-### Core Modules
-- `src/combined_main.py`: Main system orchestration and GUI
-- `src/mpc.py`: Model Predictive Control implementation
-- `src/hand_tracking.py`: MediaPipe-based vision pipeline
-- `src/trajectory_tracking.py`: MPC simulation and control thread
-- `src/utils.py`: Mathematical utilities and safety functions
-- `src/ur10e.py`: UR10e kinematics and dynamics model
-
-### Configuration Files
-- `resources/tuning.yaml`: MPC cost function weights and solver parameters
-- `COLLISION_AVOIDANCE.md`: Detailed safety system documentation
-
-
+- The maze must stay fixed between image capture and drawing.
+- The AprilTag-to-robot-base calibration must match the physical setup.
+- The paper height and pen tool transform must be correct for clean contact.
+- The system assumes the maze has two valid outer boundary openings.
+- If the robot draws a scaled-down version of the path, check speed scaling, `speedj` streaming behavior, and execution telemetry.
